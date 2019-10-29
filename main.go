@@ -67,16 +67,18 @@ func main() {
 	}
 
 	// test run
-	raftNode := raftNodes[0]
-	kvStore := raftNode.KVStore
+	raftNodeW := raftNodes[0]
+	raftNodeR := raftNodes[1]
+	kvStoreW := raftNodeW.KVStore
+	kvStoreR := raftNodeR.KVStore
 	i := 0
 	const k = "someKey"
 	for i < 50 {
 		want := fmt.Sprintf("%d", i)
-		kvStore.Propose(k, want)
+		kvStoreW.Propose(k, want)
 		for {
-			time.Sleep(10 * time.Millisecond)
-			v, ok := kvStore.Get(k)
+			time.Sleep(20 * time.Millisecond)
+			v, ok := kvStoreR.Get(k)
 			if !ok || v != want {
 				fmt.Println("Haven't seen new proposed value yet...")
 			} else {
