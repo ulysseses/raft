@@ -127,7 +127,6 @@ func (r *raft) loop() {
 		sendChan                       chan<- *raftpb.Message = r.sendChan
 		applyChan                      chan<- []byte          = r.applyChan
 		applyAckChan                   <-chan struct{}        = r.applyAckChan
-		proposeChan                    <-chan []byte          = r.proposeChan
 		stop                           <-chan struct{}        = r.stop
 		initialLeaderElectedSignalChan chan<- struct{}        = r.initialLeaderElectedSignalChan
 
@@ -150,7 +149,7 @@ func (r *raft) loop() {
 		select {
 		case <-stop:
 			return
-		case proposedData := <-proposeChan:
+		case proposedData := <-r.proposeChan:
 			// Leaders:
 			//   * If command received from client: append entry to local log,
 			//     respond after entry applied to state machine (3.5)
@@ -215,7 +214,7 @@ func (r *raft) loop() {
 			//     - Reset election timer
 			//     - Send RequestVote RPCs to all other servers
 			electionTimeoutTicks := rand.Intn(r.maxElectionTimeoutTicks-r.minElectionTimeoutTicks) + r.minElectionTimeoutTicks
-			electionTimeoutMs := time.Duration(electionTimeoutTicks) * time.Millisecond
+			electionTimeoutMs := time.Duration(electionTimeoutTicks*r.tickMs) * time.Millisecond
 			r.electionTimeoutTimer.Reset(electionTimeoutMs)
 
 			r.heartbeatTimer.Stop()
@@ -238,6 +237,8 @@ func (r *raft) loop() {
 						r.leader = r.id
 						r.votes = map[uint64]bool{}
 						r.votedFor = 0
+						r.matchIndex[r.id] = r.log[len(r.log)-1].Index
+						r.nextIndex[r.id] = r.startIndex + uint64(len(r.log))
 						break
 					} else {
 						continue
@@ -265,8 +266,17 @@ func (r *raft) loop() {
 			//   * If RPC request or response contains term T > currentTerm:
 			//     set currentTerm = T, convert to follower (3.3)
 			if msg.Term > r.term {
+				if r.id == r.leader {
+					fmt.Println("uh oh")
+				}
 				r.term = msg.Term
 				r.role = roleFollower
+			} else if msg.Term < r.term {
+				continue
+			}
+
+			if m, ok := msg.Message.(*raftpb.Message_ProposeRequest); ok {
+				fmt.Printf("%s\n", m.ProposeRequest.String())
 			}
 
 			if r.role == roleCandidate {
@@ -287,14 +297,20 @@ func (r *raft) loop() {
 						}
 					}
 					if voteCount >= r.quorumSize {
-						r.role = roleLeader
-						r.leader = r.id
-						r.votes = map[uint64]bool{}
-						r.votedFor = 0
 						// Leaders:
 						//   * Upon election: send initial empty AppendEntries RPC
 						//     (heartbeat) to each server; repeat during idle periods to
 						//     prevent election timeouts (3.4)
+						r.role = roleLeader
+						r.leader = r.id
+						r.votes = map[uint64]bool{}
+						r.votedFor = 0
+						if !r.initialLeaderElected {
+							r.initialLeaderElected = true
+							initialLeaderElectedSignalChan <- struct{}{}
+						}
+						r.matchIndex[r.id] = r.log[len(r.log)-1].Index
+						r.nextIndex[r.id] = r.startIndex + uint64(len(r.log))
 						r.electionTimeoutTimer.Stop()
 						r.heartbeatTimer.Reset(time.Duration(r.heartbeatTicks*r.tickMs) * time.Millisecond)
 						for _, peerID := range r.peers {
@@ -303,7 +319,7 @@ func (r *raft) loop() {
 							}
 							innerReq := &raftpb.AppendRequest{
 								PrevIndex: r.nextIndex[peerID] - 1,
-								PrevTerm:  r.term,
+								PrevTerm:  r.log[r.nextIndex[peerID]-1-r.startIndex].Term,
 								Committed: r.committed,
 							}
 							req := buildAppendRequest(
@@ -316,6 +332,10 @@ func (r *raft) loop() {
 					r.role = roleFollower
 					r.votes = map[uint64]bool{}
 					r.votedFor = 0
+					if !r.initialLeaderElected {
+						r.initialLeaderElected = true
+						initialLeaderElectedSignalChan <- struct{}{}
+					}
 				default:
 
 				}
@@ -344,6 +364,10 @@ func (r *raft) loop() {
 						sendChan <- resp
 					}
 				case *raftpb.Message_AppendRequest:
+					electionTimeoutTicks := rand.Intn(r.maxElectionTimeoutTicks-r.minElectionTimeoutTicks) + r.minElectionTimeoutTicks
+					electionTimeoutMs := time.Duration(electionTimeoutTicks*r.tickMs) * time.Millisecond
+					r.electionTimeoutTimer.Reset(electionTimeoutMs)
+
 					// AppendEntries RPC:
 					// Receiver Implementation:
 					req := getAppendRequest(msg)
@@ -356,16 +380,19 @@ func (r *raft) loop() {
 							"got prev_index = %d, but startIndex = %d... msg:\n%s",
 							req.PrevIndex, r.startIndex, msg.String()))
 					}
+
 					success := msg.Term >= r.term &&
-						req.PrevIndex < r.startIndex+uint64(len(r.log)-1) &&
+						req.PrevIndex <= r.startIndex+uint64(len(r.log)-1) &&
 						req.PrevTerm == r.log[req.PrevIndex-r.startIndex].Term
 
 					//   3. If an existing entry conflicts with a new one (same index
 					//      but different terms), delete the existing entry and all that
 					//      follow it (3.5)
 					//   4. Append any new entries not already in the log
-					lastI := req.PrevIndex - r.startIndex
-					r.log = append(r.log[:lastI+1], req.Entries...)
+					if success {
+						lastI := req.PrevIndex - r.startIndex
+						r.log = append(r.log[:lastI+1], req.Entries...)
+					}
 
 					//   5. If leaderCommit > commitIndex, set commitIndex =
 					//      min(leaderCommit, index of last new entry)
@@ -387,6 +414,10 @@ func (r *raft) loop() {
 					)
 					sendChan <- resp
 					r.leader = msg.Sender
+					if !r.initialLeaderElected {
+						r.initialLeaderElected = true
+						initialLeaderElectedSignalChan <- struct{}{}
+					}
 				default:
 
 				}
@@ -421,8 +452,21 @@ func (r *raft) loop() {
 						return kvs[i].v < kvs[j].v
 					})
 					n := kvs[len(kvs)-r.quorumSize].v
-					if r.log[n].Term == r.term {
+					if r.log[n-r.startIndex].Term == r.term {
 						r.committed = n
+					}
+				case *raftpb.Message_ProposeRequest:
+					req := getProposeRequest(msg)
+					// go func() { r.proposeChan <- req.Data }() // TODO: better off doing inlining of propose
+					entry := &raftpb.Entry{
+						Term:  r.term,
+						Index: r.log[len(r.log)-1].Index + 1,
+						Data:  req.Data,
+					}
+					r.log = append(r.log, entry)
+					if r.quorumSize == 1 {
+						// shortcut
+						r.committed++
 					}
 				default:
 
