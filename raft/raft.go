@@ -29,8 +29,9 @@ type raft struct {
 	applyAckChan chan struct{}
 
 	leader uint64
-	// can be either buffered or unbuffered
-	proposeChan chan []byte
+	// unbuffered
+	proposeChan   chan []byte
+	proposeBuffer [][]byte
 
 	peers                   []uint64
 	minElectionTimeoutTicks int
@@ -156,22 +157,28 @@ func (r *raft) loop() {
 			if r.role == roleLeader {
 				entry := &raftpb.Entry{
 					Term:  r.term,
-					Index: r.log[len(r.log)-1].Index + 1,
+					Index: r.startIndex + uint64(len(r.log)),
 					Data:  proposedData,
 				}
 				r.log = append(r.log, entry)
+				// shortcut
 				if r.quorumSize == 1 {
-					// shortcut
 					r.committed++
 				}
-			} else {
+			} else if r.role == roleFollower {
 				innerReq := &raftpb.ProposeRequest{
 					Data: proposedData,
 				}
 				req := buildProposeRequest(
 					r.term, r.id, r.leader,
 					innerReq)
+				// send proposal to leader, may fail in transport
+				// TODO: maybe implement req/resp to prevent dropped proposals?
 				sendChan <- req
+			} else {
+				// drop the proposal since there is no leader
+				// TODO: maybe buffer the proposal until a leader exists?
+				fmt.Printf("dropped proposal on candidate id = %d\n", r.id)
 			}
 		case <-r.heartbeatTimer.C:
 			// Leaders:
@@ -180,25 +187,26 @@ func (r *raft) loop() {
 			//     prevent election timeouts (3.4)
 			//   * If last log index >= nextIndex for a follower, send
 			//     AppendEntries RPC with log entries starting at nextIndex
-			if r.role == roleLeader {
-				r.heartbeatTimer.Reset(time.Duration(r.heartbeatTicks*r.tickMs) * time.Millisecond)
-				for _, peerID := range r.peers {
-					if peerID == r.id {
-						continue
-					}
-					nextIndex := r.nextIndex[peerID]
-					entries := append([]*raftpb.Entry{}, r.log[nextIndex-r.startIndex:]...)
-					innerReq := &raftpb.AppendRequest{
-						PrevIndex: nextIndex - 1,
-						PrevTerm:  r.log[nextIndex-1-r.startIndex].Term,
-						Entries:   entries,
-						Committed: r.committed,
-					}
-					req := buildAppendRequest(
-						r.term, r.id, peerID,
-						innerReq)
-					sendChan <- req
+			if r.role != roleLeader {
+				continue
+			}
+			r.resetHeartbeatTimeout()
+			for _, peerID := range r.peers {
+				if peerID == r.id {
+					continue
 				}
+				nextIndex := r.nextIndex[peerID]
+				entries := append([]*raftpb.Entry{}, r.log[nextIndex-r.startIndex:]...)
+				innerReq := &raftpb.AppendRequest{
+					PrevIndex: nextIndex - 1,
+					PrevTerm:  r.log[nextIndex-1-r.startIndex].Term,
+					Entries:   entries,
+					Committed: r.committed,
+				}
+				req := buildAppendRequest(
+					r.term, r.id, peerID,
+					innerReq)
+				sendChan <- req
 			}
 		case <-r.electionTimeoutTimer.C:
 			// Followers:
@@ -213,45 +221,8 @@ func (r *raft) loop() {
 			//     - Vote for self
 			//     - Reset election timer
 			//     - Send RequestVote RPCs to all other servers
-			electionTimeoutTicks := rand.Intn(r.maxElectionTimeoutTicks-r.minElectionTimeoutTicks) + r.minElectionTimeoutTicks
-			electionTimeoutMs := time.Duration(electionTimeoutTicks*r.tickMs) * time.Millisecond
-			r.electionTimeoutTimer.Reset(electionTimeoutMs)
-
-			r.heartbeatTimer.Stop()
-
-			r.role = roleCandidate
-			r.term++
-			r.votedFor = r.id
-			r.votes = map[uint64]bool{r.id: true}
-			for _, peerID := range r.peers {
-				if peerID == r.id {
-					if r.quorumSize == 1 {
-						// shortcut
-						r.electionTimeoutTimer.Stop()
-						r.heartbeatTimer.Reset(time.Duration(r.heartbeatTicks*r.tickMs) * time.Millisecond)
-						r.role = roleLeader
-						if !r.initialLeaderElected {
-							r.initialLeaderElected = true
-							initialLeaderElectedSignalChan <- struct{}{}
-						}
-						r.leader = r.id
-						r.votes = map[uint64]bool{}
-						r.votedFor = 0
-						r.matchIndex[r.id] = r.log[len(r.log)-1].Index
-						r.nextIndex[r.id] = r.startIndex + uint64(len(r.log))
-						break
-					} else {
-						continue
-					}
-				}
-				innerReq := &raftpb.VoteRequest{
-					Index: r.log[len(r.log)-1].Index,
-				}
-				req := buildVoteRequest(
-					r.term, r.id, peerID,
-					innerReq)
-				sendChan <- req
-			}
+			r.resetElectionTimeout()
+			r.becomeCandidate()
 		case <-applyAckChan:
 			// All Servers:
 			//   * If commitIndex > lastApplied: increment lastApplied, apply
@@ -266,17 +237,10 @@ func (r *raft) loop() {
 			//   * If RPC request or response contains term T > currentTerm:
 			//     set currentTerm = T, convert to follower (3.3)
 			if msg.Term > r.term {
-				if r.id == r.leader {
-					fmt.Println("uh oh")
-				}
 				r.term = msg.Term
-				r.role = roleFollower
+				r.becomeFollower()
 			} else if msg.Term < r.term {
 				continue
-			}
-
-			if m, ok := msg.Message.(*raftpb.Message_ProposeRequest); ok {
-				fmt.Printf("%s\n", m.ProposeRequest.String())
 			}
 
 			if r.role == roleCandidate {
@@ -301,41 +265,10 @@ func (r *raft) loop() {
 						//   * Upon election: send initial empty AppendEntries RPC
 						//     (heartbeat) to each server; repeat during idle periods to
 						//     prevent election timeouts (3.4)
-						r.role = roleLeader
-						r.leader = r.id
-						r.votes = map[uint64]bool{}
-						r.votedFor = 0
-						if !r.initialLeaderElected {
-							r.initialLeaderElected = true
-							initialLeaderElectedSignalChan <- struct{}{}
-						}
-						r.matchIndex[r.id] = r.log[len(r.log)-1].Index
-						r.nextIndex[r.id] = r.startIndex + uint64(len(r.log))
-						r.electionTimeoutTimer.Stop()
-						r.heartbeatTimer.Reset(time.Duration(r.heartbeatTicks*r.tickMs) * time.Millisecond)
-						for _, peerID := range r.peers {
-							if peerID == r.id {
-								continue
-							}
-							innerReq := &raftpb.AppendRequest{
-								PrevIndex: r.nextIndex[peerID] - 1,
-								PrevTerm:  r.log[r.nextIndex[peerID]-1-r.startIndex].Term,
-								Committed: r.committed,
-							}
-							req := buildAppendRequest(
-								r.term, r.id, peerID,
-								innerReq)
-							sendChan <- req
-						}
+						r.becomeLeader()
 					}
 				case *raftpb.Message_AppendRequest:
-					r.role = roleFollower
-					r.votes = map[uint64]bool{}
-					r.votedFor = 0
-					if !r.initialLeaderElected {
-						r.initialLeaderElected = true
-						initialLeaderElectedSignalChan <- struct{}{}
-					}
+					r.becomeFollower()
 				default:
 
 				}
@@ -364,12 +297,9 @@ func (r *raft) loop() {
 						sendChan <- resp
 					}
 				case *raftpb.Message_AppendRequest:
-					electionTimeoutTicks := rand.Intn(r.maxElectionTimeoutTicks-r.minElectionTimeoutTicks) + r.minElectionTimeoutTicks
-					electionTimeoutMs := time.Duration(electionTimeoutTicks*r.tickMs) * time.Millisecond
-					r.electionTimeoutTimer.Reset(electionTimeoutMs)
-
 					// AppendEntries RPC:
 					// Receiver Implementation:
+					r.registerLeader(msg.Sender)
 					req := getAppendRequest(msg)
 
 					//   1. Reply false if term < currentTerm (3.3)
@@ -473,6 +403,91 @@ func (r *raft) loop() {
 				}
 			}
 		}
+	}
+}
+
+func (r *raft) resetHeartbeatTimeout() {
+	r.heartbeatTimer.Reset(time.Duration(r.heartbeatTicks*r.tickMs) * time.Millisecond)
+}
+
+func (r *raft) resetElectionTimeout() {
+	electionTimeoutTicks := rand.Intn(r.maxElectionTimeoutTicks-r.minElectionTimeoutTicks) + r.minElectionTimeoutTicks
+	electionTimeoutMs := time.Duration(electionTimeoutTicks*r.tickMs) * time.Millisecond
+	r.electionTimeoutTimer.Reset(electionTimeoutMs)
+}
+
+func (r *raft) becomeLeader() {
+	r.electionTimeoutTimer.Stop()
+	r.resetHeartbeatTimeout()
+	r.role = roleLeader
+	r.leader = r.id
+	r.votes = map[uint64]bool{}
+	r.votedFor = 0
+	r.matchIndex[r.id] = r.startIndex + uint64(len(r.log)) - 1
+	r.nextIndex[r.id] = r.matchIndex[r.id] + 1
+	if !r.initialLeaderElected {
+		r.initialLeaderElected = true
+		r.initialLeaderElectedSignalChan <- struct{}{}
+	}
+
+	for _, peerID := range r.peers {
+		if peerID == r.id {
+			continue
+		}
+		innerReq := &raftpb.AppendRequest{
+			PrevIndex: r.nextIndex[peerID] - 1,
+			PrevTerm:  r.log[r.nextIndex[peerID]-1-r.startIndex].Term,
+			Committed: r.committed,
+		}
+		req := buildAppendRequest(
+			r.term, r.id, peerID,
+			innerReq)
+		r.sendChan <- req
+	}
+}
+
+func (r *raft) becomeCandidate() {
+	r.role = roleCandidate
+	r.leader = 0
+	r.term++
+	r.votedFor = r.id
+	r.votes = map[uint64]bool{r.id: true}
+
+	// shortcut
+	if r.quorumSize == 1 {
+		r.becomeLeader()
+	}
+
+	for _, peerID := range r.peers {
+		if peerID == r.id {
+			continue
+		}
+		innerReq := &raftpb.VoteRequest{
+			Index: r.startIndex + uint64(len(r.log)) - 1,
+		}
+		req := buildVoteRequest(
+			r.term, r.id, peerID,
+			innerReq)
+		r.sendChan <- req
+	}
+}
+
+func (r *raft) becomeFollower() {
+	r.role = roleFollower
+	r.leader = 0
+	r.votedFor = 0
+	if len(r.votes) > 1 {
+		r.votes = map[uint64]bool{}
+	}
+}
+
+func (r *raft) registerLeader(leader uint64) {
+	r.leader = leader
+	r.resetElectionTimeout()
+	r.heartbeatTimer.Stop()
+	if !r.initialLeaderElected {
+		r.initialLeaderElected = true
+		r.initialLeaderElectedSignalChan <- struct{}{}
 	}
 }
 

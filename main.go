@@ -25,7 +25,7 @@ func myConfiguration(id uint64) (*raft.Configuration, error) {
 		MinElectionTimeoutTicks: 10,
 		MaxElectionTimeoutTicks: 20,
 		HeartbeatTicks:          1,
-		TickMs:                  10,
+		TickMs:                  2,
 	}, nil
 }
 
@@ -71,13 +71,14 @@ func main() {
 	raftNodeR := raftNodes[1]
 	kvStoreW := raftNodeW.KVStore
 	kvStoreR := raftNodeR.KVStore
-	i := 0
 	const k = "someKey"
-	for i < 50 {
+	i := 1
+	for i < 21 {
 		want := fmt.Sprintf("%d", i)
 		kvStoreW.Propose(k, want)
-		for {
-			time.Sleep(20 * time.Millisecond)
+		j := 0
+		for j < 10 {
+			time.Sleep(5 * time.Millisecond)
 			v, ok := kvStoreR.Get(k)
 			if !ok || v != want {
 				fmt.Println("Haven't seen new proposed value yet...")
@@ -85,7 +86,12 @@ func main() {
 				fmt.Printf("Got %s.\n", v)
 				break
 			}
+			j++
 		}
-		i++
+		if j == 10 {
+			fmt.Printf("Proposal %d dropped. Proposing it again.\n", i)
+		} else {
+			i++
+		}
 	}
 }
