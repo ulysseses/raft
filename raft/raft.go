@@ -190,6 +190,10 @@ func (r *raft) loop() {
 				continue
 			}
 			r.resetHeartbeatTimeout()
+			if r.quorumSize == 1 {
+				r.committed = r.startIndex + uint64(len(r.log)) - 1
+				continue
+			}
 			for _, peerID := range r.peers {
 				if peerID == r.id {
 					continue
@@ -386,17 +390,12 @@ func (r *raft) loop() {
 					}
 				case *raftpb.Message_ProposeRequest:
 					req := getProposeRequest(msg)
-					// go func() { r.proposeChan <- req.Data }() // TODO: better off doing inlining of propose
 					entry := &raftpb.Entry{
 						Term:  r.term,
 						Index: r.log[len(r.log)-1].Index + 1,
 						Data:  req.Data,
 					}
 					r.log = append(r.log, entry)
-					if r.quorumSize == 1 {
-						// shortcut
-						r.committed++
-					}
 				default:
 
 				}
@@ -475,7 +474,7 @@ func (r *raft) becomeFollower() {
 	r.role = roleFollower
 	r.leader = 0
 	r.votedFor = 0
-	if len(r.votes) > 1 {
+	if len(r.peers) > 1 {
 		r.votes = map[uint64]bool{}
 	}
 }
