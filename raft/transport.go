@@ -9,8 +9,8 @@ import (
 type transport struct {
 	raftpb.UnimplementedRaftServiceServer
 	raftTransportFacade raftTransportFacade
-	clientsToPeers      map[uint64]raftpb.RaftService_CommunicateWithPeerClient
-	stop                chan struct{}
+	peerClients         map[uint64]raftpb.RaftService_CommunicateWithPeerClient
+	stopChan            chan struct{}
 }
 
 func (t *transport) CommunicateWithPeer(stream raftpb.RaftService_CommunicateWithPeerServer) error {
@@ -29,12 +29,16 @@ func (t *transport) CommunicateWithPeer(stream raftpb.RaftService_CommunicateWit
 func (t *transport) sendLoop() {
 	for {
 		select {
-		case <-t.stop:
+		case <-t.stopChan:
 			return
 		case msg := <-t.raftTransportFacade.send():
-			if err := t.clientsToPeers[msg.Recipient].Send(msg); err != nil {
+			if err := t.peerClients[msg.Recipient].Send(msg); err != nil && err != io.EOF {
 				panic(err)
 			}
 		}
 	}
+}
+
+func (t *transport) stop() {
+	t.stopChan <- struct{}{}
 }

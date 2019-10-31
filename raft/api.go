@@ -25,20 +25,28 @@ type Configuration struct {
 
 // Node is the public structure for raft
 type Node struct {
-	raft        *raft
-	transport   *transport
-	grpcServer  *grpc.Server
-	connClosers []func() error
-	KVStore     *KVStore
+	raft              *raft
+	transport         *transport
+	grpcServer        *grpc.Server
+	serverConnCloser  func() error
+	clientConnClosers []func() error
+	KVStore           *KVStore
 }
 
 // Stop stops the running loop goroutines of Node.
-func (n *Node) Stop() {
+func (n *Node) Stop() error {
 	// raft must be stopped after transport/KVStore
-	n.transport.stop <- struct{}{}
+	n.transport.stop()
 	n.KVStore.stop <- struct{}{}
 	n.raft.stop <- struct{}{}
 	n.grpcServer.Stop()
+	n.serverConnCloser()
+	for _, connCloser := range n.clientConnClosers {
+		if err := connCloser(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // NewNode constructs a Node.
@@ -101,8 +109,8 @@ func NewNode(c *Configuration) (*Node, error) {
 	// construct transport
 	transport := &transport{
 		raftTransportFacade: raft,
-		clientsToPeers:      map[uint64]raftpb.RaftService_CommunicateWithPeerClient{},
-		stop:                make(chan struct{}),
+		peerClients:         map[uint64]raftpb.RaftService_CommunicateWithPeerClient{},
+		stopChan:            make(chan struct{}),
 	}
 	lis, err := net.Listen("tcp", c.Peers[raft.id])
 	if err != nil {
@@ -112,19 +120,21 @@ func NewNode(c *Configuration) (*Node, error) {
 	raftpb.RegisterRaftServiceServer(grpcServer, transport)
 	go grpcServer.Serve(lis)
 
-	connClosers := []func() error{}
+	clientConnClosers := []func() error{}
 	for peerID, peerAddr := range c.Peers {
 		conn, err := grpc.Dial(peerAddr, grpc.WithInsecure(), grpc.WithBlock())
 		if err != nil {
+			lis.Close()
 			return nil, err
 		}
 		client := raftpb.NewRaftServiceClient(conn)
 		stream, err := client.CommunicateWithPeer(context.Background())
 		if err != nil {
+			lis.Close()
 			return nil, err
 		}
-		transport.clientsToPeers[peerID] = stream
-		connClosers = append(connClosers, conn.Close)
+		transport.peerClients[peerID] = stream
+		clientConnClosers = append(clientConnClosers, conn.Close)
 	}
 
 	// construct KVStore
@@ -142,11 +152,12 @@ func NewNode(c *Configuration) (*Node, error) {
 	<-raft.initialLeaderElectedSignalChan
 
 	node := &Node{
-		raft:        raft,
-		transport:   transport,
-		grpcServer:  grpcServer,
-		connClosers: connClosers,
-		KVStore:     kvStore,
+		raft:              raft,
+		transport:         transport,
+		grpcServer:        grpcServer,
+		serverConnCloser:  lis.Close,
+		clientConnClosers: clientConnClosers,
+		KVStore:           kvStore,
 	}
 	return node, nil
 }

@@ -30,8 +30,7 @@ type raft struct {
 
 	leader uint64
 	// unbuffered
-	proposeChan   chan []byte
-	proposeBuffer [][]byte
+	proposeChan chan []byte
 
 	peers                   []uint64
 	minElectionTimeoutTicks int
