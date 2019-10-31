@@ -15,7 +15,7 @@ type KVStore struct {
 	mu sync.RWMutex
 
 	proposeChan chan raftpb.KV
-	stop        chan struct{}
+	stopChan    chan struct{}
 }
 
 // Get gets the value for a key
@@ -49,7 +49,7 @@ func (s *KVStore) loop() {
 				panic(err)
 			}
 			s.raftApplicationFacade.propose() <- data
-		case <-s.stop:
+		case <-s.stopChan:
 			return
 		}
 	}

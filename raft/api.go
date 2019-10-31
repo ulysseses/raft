@@ -37,7 +37,7 @@ type Node struct {
 func (n *Node) Stop() error {
 	// raft must be stopped after transport/KVStore
 	n.transport.stop()
-	n.KVStore.stop <- struct{}{}
+	n.KVStore.stopChan <- struct{}{}
 	n.raft.stop <- struct{}{}
 	n.grpcServer.Stop()
 	n.serverConnCloser()
@@ -142,7 +142,7 @@ func NewNode(c *Configuration) (*Node, error) {
 		raftApplicationFacade: raft,
 		store:                 map[string]string{},
 		proposeChan:           make(chan raftpb.KV),
-		stop:                  make(chan struct{}),
+		stopChan:              make(chan struct{}),
 	}
 
 	go raft.loop()
