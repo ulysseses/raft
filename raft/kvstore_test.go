@@ -40,10 +40,15 @@ func newFakeRaftApplicationFacade() *fakeRaftApplicationFacade {
 func TestPropose(t *testing.T) {
 	fakeRaft := newFakeRaftApplicationFacade()
 	go func() {
-		for range fakeRaft.proposeChan {
+		for {
+			select {
+			case <-fakeRaft.stopChan:
+				return
+			case <-fakeRaft.proposeChan:
+			}
 		}
 	}()
-	defer func() { close(fakeRaft.proposeChan) }()
+	defer func() { fakeRaft.stopChan <- struct{}{} }()
 	kvStore := &KVStore{
 		raftApplicationFacade: fakeRaft,
 		store:                 map[string]string{},
@@ -51,7 +56,7 @@ func TestPropose(t *testing.T) {
 		stopChan:              make(chan struct{}),
 	}
 	go kvStore.loop()
-	defer func() { close(kvStore.stopChan) }()
+	defer func() { kvStore.stopChan <- struct{}{} }()
 	for i := 0; i < 3; i++ {
 		done := make(chan struct{})
 		go func(done chan<- struct{}) {
@@ -66,7 +71,7 @@ func TestPropose(t *testing.T) {
 	}
 }
 
-// can be flaky
+// potentially flaky
 func TestGet(t *testing.T) {
 	fakeRaft := newFakeRaftApplicationFacade()
 	go func() {

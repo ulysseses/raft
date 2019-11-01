@@ -2,8 +2,10 @@ package raft
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/ulysseses/raft/raftpb"
@@ -112,10 +114,27 @@ func NewNode(c *Configuration) (*Node, error) {
 		peerClients:         map[uint64]raftpb.RaftService_CommunicateWithPeerClient{},
 		stopChan:            make(chan struct{}),
 	}
-	lis, err := net.Listen("tcp", c.Peers[raft.id])
-	if err != nil {
-		return nil, err
+
+	// TODO(ulysseses): have a better way to specify protocol...
+	var lis net.Listener
+	tokens := strings.Split(c.Peers[raft.id], "://")
+	if len(tokens) == 1 {
+		// assume tcp
+		var err error
+		lis, err = net.Listen("tcp", c.Peers[raft.id])
+		if err != nil {
+			return nil, err
+		}
+	} else if len(tokens) == 2 {
+		var err error
+		lis, err = net.Listen(tokens[0], tokens[1])
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		return nil, fmt.Errorf("invalid server address: %s", c.Peers[raft.id])
 	}
+
 	grpcServer := grpc.NewServer()
 	raftpb.RegisterRaftServiceServer(grpcServer, transport)
 	go grpcServer.Serve(lis)

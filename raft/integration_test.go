@@ -2,6 +2,9 @@ package raft
 
 import (
 	"fmt"
+	"io/ioutil"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -14,12 +17,18 @@ func fatalOnError(t *testing.T, err error) {
 }
 
 func TestOneNodeLinear(t *testing.T) {
+	tmpDir, err := ioutil.TempDir("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
 	config := &Configuration{
 		RecvChanSize: 100,
 		SendChanSize: 100,
 		ID:           111,
 		Peers: map[uint64]string{
-			111: "localhost:5551",
+			111: fmt.Sprintf("unix://%s", filepath.Join(tmpDir, "TestThreeNodeLinear111.sock")),
 		},
 		MinElectionTimeoutTicks: 10,
 		MaxElectionTimeoutTicks: 20,
@@ -43,15 +52,15 @@ func TestOneNodeLinear(t *testing.T) {
 			time.Sleep(5 * time.Millisecond)
 			v, ok := kvStore.Get(k)
 			if !ok || v != want {
-				fmt.Println("Haven't seen new proposed value yet...")
+				t.Log("Haven't seen new proposed value yet...")
 			} else {
-				fmt.Printf("Got %s.\n", v)
+				t.Logf("Got %s.\n", v)
 				break
 			}
 			j++
 		}
 		if j == 10 {
-			fmt.Printf("Proposal %d dropped. Proposing it again.\n", i)
+			t.Logf("Proposal %d dropped. Proposing it again.\n", i)
 		} else {
 			i++
 		}
@@ -59,6 +68,12 @@ func TestOneNodeLinear(t *testing.T) {
 }
 
 func TestThreeNodeLinear(t *testing.T) {
+	tmpDir, err := ioutil.TempDir("", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
 	myConfiguration := func(id uint64) (*Configuration, error) {
 		if id != 111 && id != 222 && id != 333 {
 			return nil, fmt.Errorf("id must be 111, 222, or 333; got %d", id)
@@ -68,9 +83,9 @@ func TestThreeNodeLinear(t *testing.T) {
 			SendChanSize: 100,
 			ID:           id,
 			Peers: map[uint64]string{
-				111: "localhost:5551",
-				222: "localhost:5552",
-				333: "localhost:5553",
+				111: fmt.Sprintf("unix://%s", filepath.Join(tmpDir, "TestThreeNodeLinear111.sock")),
+				222: fmt.Sprintf("unix://%s", filepath.Join(tmpDir, "TestThreeNodeLinear222.sock")),
+				333: fmt.Sprintf("unix://%s", filepath.Join(tmpDir, "TestThreeNodeLinear333.sock")),
 			},
 			MinElectionTimeoutTicks: 10,
 			MaxElectionTimeoutTicks: 20,
@@ -79,38 +94,41 @@ func TestThreeNodeLinear(t *testing.T) {
 		}, nil
 	}
 
-	// spin up 3 raft nodes
-	raftNodes := []*Node{}
-	type result struct {
-		n   *Node
-		err error
-	}
-	var wg sync.WaitGroup
-	wg.Add(3)
-	results := make(chan result, 3)
-	for i := 1; i <= 3; i++ {
-		go func(i uint64) {
-			defer wg.Done()
-			config, err := myConfiguration(uint64(i))
-			if err != nil {
-				results <- result{nil, err}
-				return
-			}
-			raftNode, err := NewNode(config)
-			results <- result{raftNode, err}
-		}(uint64(i * 111))
-	}
-	wg.Wait()
-	close(results)
-	for res := range results {
-		if res.err != nil {
-			t.Fatal(res.err)
+	setup3Nodes := func(t *testing.T) ([]*Node, []func() error) {
+		raftNodes := []*Node{}
+		closers := []func() error{}
+		type result struct {
+			n   *Node
+			err error
 		}
-		defer res.n.Stop()
-		raftNodes = append(raftNodes, res.n)
+		var wg sync.WaitGroup
+		wg.Add(3)
+		results := make(chan result, 3)
+		for i := 1; i <= 3; i++ {
+			go func(i uint64) {
+				defer wg.Done()
+				config, err := myConfiguration(uint64(i))
+				if err != nil {
+					results <- result{nil, err}
+					return
+				}
+				raftNode, err := NewNode(config)
+				results <- result{raftNode, err}
+			}(uint64(i * 111))
+		}
+		wg.Wait()
+		close(results)
+		for res := range results {
+			if res.err != nil {
+				t.Fatal(res.err)
+			}
+			closers = append(closers, res.n.Stop)
+			raftNodes = append(raftNodes, res.n)
+		}
+		return raftNodes, closers
 	}
 
-	test := func(kvStoreW, kvStoreR *KVStore) {
+	test := func(kvStoreW, kvStoreR *KVStore, done chan struct{}) {
 		const k = "someKey"
 		i := 1
 		for i < 21 {
@@ -121,23 +139,39 @@ func TestThreeNodeLinear(t *testing.T) {
 				time.Sleep(5 * time.Millisecond)
 				v, ok := kvStoreR.Get(k)
 				if !ok || v != want {
-					fmt.Println("Haven't seen new proposed value yet...")
+					t.Log("Haven't seen new proposed value yet...")
 				} else {
-					fmt.Printf("Got %s.\n", v)
+					t.Logf("Got %s.\n", v)
 					break
 				}
 				j++
 			}
 			if j == 10 {
-				fmt.Printf("Proposal %d dropped. Proposing it again.\n", i)
+				t.Logf("Proposal %d dropped. Proposing it again.\n", i)
 			} else {
 				i++
 			}
+		}
+		close(done)
+	}
+
+	tester := func(t *testing.T, kvStoreW, kvStoreR *KVStore) {
+		done := make(chan struct{})
+		go test(kvStoreW, kvStoreR, done)
+		select {
+		case <-time.After(200 * time.Millisecond):
+			t.Error("timed out after 200ms")
+		case <-done:
 		}
 	}
 
 	// DO NOT RUN IN PARALLEL
 	t.Run("writer is leader, reader is follower", func(t *testing.T) {
+		raftNodes, closers := setup3Nodes(t)
+		for _, closer := range closers {
+			defer closer()
+		}
+
 		var (
 			kvStoreW, kvStoreR *KVStore
 		)
@@ -156,9 +190,14 @@ func TestThreeNodeLinear(t *testing.T) {
 				count++
 			}
 		}
-		test(kvStoreW, kvStoreR)
+		tester(t, kvStoreW, kvStoreR)
 	})
 	t.Run("writer is leader, reader is leader", func(t *testing.T) {
+		raftNodes, closers := setup3Nodes(t)
+		for _, closer := range closers {
+			defer closer()
+		}
+
 		var (
 			kvStoreW, kvStoreR *KVStore
 		)
@@ -171,9 +210,14 @@ func TestThreeNodeLinear(t *testing.T) {
 				break
 			}
 		}
-		test(kvStoreW, kvStoreR)
+		tester(t, kvStoreW, kvStoreR)
 	})
 	t.Run("writer is follower, reader is follower", func(t *testing.T) {
+		raftNodes, closers := setup3Nodes(t)
+		for _, closer := range closers {
+			defer closer()
+		}
+
 		var (
 			kvStoreW, kvStoreR *KVStore
 		)
@@ -186,9 +230,14 @@ func TestThreeNodeLinear(t *testing.T) {
 				break
 			}
 		}
-		test(kvStoreW, kvStoreR)
+		tester(t, kvStoreW, kvStoreR)
 	})
 	t.Run("writer is follower, reader is leader", func(t *testing.T) {
+		raftNodes, closers := setup3Nodes(t)
+		for _, closer := range closers {
+			defer closer()
+		}
+
 		var (
 			kvStoreW, kvStoreR *KVStore
 		)
@@ -207,6 +256,8 @@ func TestThreeNodeLinear(t *testing.T) {
 				count++
 			}
 		}
-		test(kvStoreW, kvStoreR)
+		tester(t, kvStoreW, kvStoreR)
 	})
 }
+
+// TODO(ulysseses): test cluster recovery
