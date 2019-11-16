@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"fmt"
 	"io"
 
 	"github.com/ulysseses/raft/raftpb"
@@ -27,13 +28,29 @@ func (t *transport) CommunicateWithPeer(stream raftpb.RaftService_CommunicateWit
 }
 
 func (t *transport) sendLoop() {
+	defer func() {
+		// TODO(ulysseses): clean up recover debug info
+		r := recover()
+		if r == nil {
+			return
+		}
+		fmt.Println("Recovered:", r)
+		for peerID, peerClient := range t.peerClients {
+			fmt.Printf("peerID: %d, peerClient: %v\n", peerID, peerClient)
+		}
+		panic("")
+	}()
 	for {
 		select {
 		case <-t.stopChan:
 			return
 		case msg := <-t.raftTransportFacade.send():
-			if err := t.peerClients[msg.Recipient].Send(msg); err != nil && err != io.EOF {
-				panic(err)
+			client, ok := t.peerClients[msg.Recipient]
+			if !ok {
+				panic(fmt.Sprintf("msg: %s", msg.String()))
+			}
+			if err := client.Send(msg); err != nil && err != io.EOF {
+				panic(fmt.Sprintf("msg: %s, err: %v", msg.String(), err))
 			}
 		}
 	}

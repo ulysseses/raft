@@ -63,6 +63,7 @@ type raft struct {
 	quorumSize int
 
 	stop chan struct{}
+
 	// send-once channel indicating initial leader elected
 	initialLeaderElectedSignalChan chan struct{}
 	initialLeaderElected           bool
@@ -122,6 +123,9 @@ type raft struct {
 //   5. If leaderCommit > commitIndex, set commitIndex =
 //      min(leaderCommit, index of last new entry)
 func (r *raft) loop() {
+	r.resetElectionTimeout()
+	defer r.electionTimeoutTimer.Stop()
+	defer r.heartbeatTimer.Stop()
 	var (
 		recvChan                       <-chan *raftpb.Message = r.recvChan
 		sendChan                       chan<- *raftpb.Message = r.sendChan
@@ -168,12 +172,14 @@ func (r *raft) loop() {
 				innerReq := &raftpb.ProposeRequest{
 					Data: proposedData,
 				}
-				req := buildProposeRequest(
-					r.term, r.id, r.leader,
-					innerReq)
-				// send proposal to leader, may fail in transport
-				// TODO: maybe implement req/resp to prevent dropped proposals?
-				sendChan <- req
+				if r.leader != 0 {
+					// send proposal to leader, may fail in transport
+					// TODO: maybe implement req/resp to prevent dropped proposals?
+					req := buildProposeRequest(
+						r.term, r.id, r.leader,
+						innerReq)
+					sendChan <- req
+				}
 			} else {
 				// drop the proposal since there is no leader
 				// TODO: maybe buffer the proposal until a leader exists?

@@ -96,7 +96,7 @@ func TestThreeNodeLinear(t *testing.T) {
 
 	setup3Nodes := func(t *testing.T) ([]*Node, []func() error) {
 		raftNodes := []*Node{}
-		closers := []func() error{}
+		stoppers := []func() error{}
 		type result struct {
 			n   *Node
 			err error
@@ -122,10 +122,10 @@ func TestThreeNodeLinear(t *testing.T) {
 			if res.err != nil {
 				t.Fatal(res.err)
 			}
-			closers = append(closers, res.n.Stop)
+			stoppers = append(stoppers, res.n.Stop)
 			raftNodes = append(raftNodes, res.n)
 		}
-		return raftNodes, closers
+		return raftNodes, stoppers
 	}
 
 	test := func(kvStoreW, kvStoreR *KVStore, done chan struct{}) {
@@ -155,12 +155,16 @@ func TestThreeNodeLinear(t *testing.T) {
 		close(done)
 	}
 
-	tester := func(t *testing.T, kvStoreW, kvStoreR *KVStore) {
+	tester := func(
+		t *testing.T,
+		kvStoreW, kvStoreR *KVStore,
+		timeout time.Duration,
+	) {
 		done := make(chan struct{})
 		go test(kvStoreW, kvStoreR, done)
 		select {
-		case <-time.After(200 * time.Millisecond):
-			t.Error("timed out after 200ms")
+		case <-time.After(timeout):
+			t.Error("timed out")
 		case <-done:
 		}
 	}
@@ -190,7 +194,7 @@ func TestThreeNodeLinear(t *testing.T) {
 				count++
 			}
 		}
-		tester(t, kvStoreW, kvStoreR)
+		tester(t, kvStoreW, kvStoreR, 200*time.Millisecond)
 	})
 	t.Run("writer is leader, reader is leader", func(t *testing.T) {
 		raftNodes, closers := setup3Nodes(t)
@@ -210,7 +214,7 @@ func TestThreeNodeLinear(t *testing.T) {
 				break
 			}
 		}
-		tester(t, kvStoreW, kvStoreR)
+		tester(t, kvStoreW, kvStoreR, 200*time.Millisecond)
 	})
 	t.Run("writer is follower, reader is follower", func(t *testing.T) {
 		raftNodes, closers := setup3Nodes(t)
@@ -230,7 +234,7 @@ func TestThreeNodeLinear(t *testing.T) {
 				break
 			}
 		}
-		tester(t, kvStoreW, kvStoreR)
+		tester(t, kvStoreW, kvStoreR, 200*time.Millisecond)
 	})
 	t.Run("writer is follower, reader is leader", func(t *testing.T) {
 		raftNodes, closers := setup3Nodes(t)
@@ -256,8 +260,35 @@ func TestThreeNodeLinear(t *testing.T) {
 				count++
 			}
 		}
-		tester(t, kvStoreW, kvStoreR)
+		tester(t, kvStoreW, kvStoreR, 200*time.Millisecond)
+	})
+	t.Run("leader is dropped and brought back online", func(t *testing.T) {
+		raftNodes, stoppers := setup3Nodes(t)
+		for _, stopper := range stoppers {
+			defer stopper()
+		}
+
+		var (
+			downNode               *Node
+			downKVStore, upKVStore *KVStore
+		)
+		// TODO(ulysseses): potential data race if downNode no longer is leader
+		// immediately after we assign downNode = node
+		for _, node := range raftNodes {
+			if node.raft.role == roleLeader {
+				downNode = node
+				downKVStore = node.KVStore
+			} else {
+				upKVStore = node.KVStore
+			}
+		}
+
+		go func() {
+			time.Sleep(50 * time.Millisecond) // small initial delay
+			downNode.pause()
+			time.Sleep(50 * time.Millisecond) // > 2x election timeout
+			downNode.unpause()
+		}()
+		tester(t, downKVStore, upKVStore, time.Second)
 	})
 }
-
-// TODO(ulysseses): test cluster recovery

@@ -30,25 +30,31 @@ type Node struct {
 	raft              *raft
 	transport         *transport
 	grpcServer        *grpc.Server
-	serverConnCloser  func() error
+	lis               net.Listener
 	clientConnClosers []func() error
 	KVStore           *KVStore
 }
 
 // Stop stops the running loop goroutines of Node.
 func (n *Node) Stop() error {
-	// raft must be stopped after transport/KVStore
-	n.transport.stop()
-	n.KVStore.stopChan <- struct{}{}
-	n.raft.stop <- struct{}{}
-	n.grpcServer.Stop()
-	n.serverConnCloser()
+	n.pause()
+	if err := n.lis.Close(); err != nil {
+		return err
+	}
 	for _, connCloser := range n.clientConnClosers {
 		if err := connCloser(); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (n *Node) pause() {
+	n.raft.stop <- struct{}{}
+}
+
+func (n *Node) unpause() {
+	go n.raft.loop()
 }
 
 // NewNode constructs a Node.
@@ -86,7 +92,11 @@ func NewNode(c *Configuration) (*Node, error) {
 	raft.tickMs = c.TickMs
 	electionTimeoutTicks := rand.Intn(raft.maxElectionTimeoutTicks-raft.minElectionTimeoutTicks) + raft.minElectionTimeoutTicks
 	electionTimeoutMs := time.Duration(electionTimeoutTicks*raft.tickMs) * time.Millisecond
+
+	// Initialize timers but don't start them
+	// They will start when loop starts.
 	raft.electionTimeoutTimer = newTimer(electionTimeoutMs)
+	raft.electionTimeoutTimer.Stop()
 	raft.heartbeatTimer = newTimer(time.Duration(raft.heartbeatTicks*raft.tickMs) * time.Millisecond)
 	raft.heartbeatTimer.Stop()
 
@@ -174,7 +184,7 @@ func NewNode(c *Configuration) (*Node, error) {
 		raft:              raft,
 		transport:         transport,
 		grpcServer:        grpcServer,
-		serverConnCloser:  lis.Close,
+		lis:               lis,
 		clientConnClosers: clientConnClosers,
 		KVStore:           kvStore,
 	}
