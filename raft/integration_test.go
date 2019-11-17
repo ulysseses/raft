@@ -1,3 +1,5 @@
+// +build integration
+
 package raft
 
 import (
@@ -186,10 +188,10 @@ func TestThreeNodeLinear(t *testing.T) {
 			if count == 2 {
 				break
 			}
-			if node.raft.role == roleLeader {
+			if node.raft.getRole() == roleLeader {
 				kvStoreW = node.KVStore
 				count++
-			} else if node.raft.role == roleFollower {
+			} else if node.raft.getRole() == roleFollower {
 				kvStoreR = node.KVStore
 				count++
 			}
@@ -208,7 +210,7 @@ func TestThreeNodeLinear(t *testing.T) {
 		// hack: potential data race
 		// TODO(ulysseses): remove data race potential
 		for _, node := range raftNodes {
-			if node.raft.role == roleLeader {
+			if node.raft.getRole() == roleLeader {
 				kvStoreW = node.KVStore
 				kvStoreR = node.KVStore
 				break
@@ -228,7 +230,7 @@ func TestThreeNodeLinear(t *testing.T) {
 		// hack: potential data race
 		// TODO(ulysseses): remove data race potential
 		for _, node := range raftNodes {
-			if node.raft.role == roleFollower {
+			if node.raft.getRole() == roleFollower {
 				kvStoreW = node.KVStore
 				kvStoreR = node.KVStore
 				break
@@ -252,10 +254,10 @@ func TestThreeNodeLinear(t *testing.T) {
 			if count == 2 {
 				break
 			}
-			if node.raft.role == roleFollower {
+			if node.raft.getRole() == roleFollower {
 				kvStoreW = node.KVStore
 				count++
-			} else if node.raft.role == roleLeader {
+			} else if node.raft.getRole() == roleLeader {
 				kvStoreR = node.KVStore
 				count++
 			}
@@ -275,7 +277,7 @@ func TestThreeNodeLinear(t *testing.T) {
 		// TODO(ulysseses): potential data race if downNode no longer is leader
 		// immediately after we assign downNode = node
 		for _, node := range raftNodes {
-			if node.raft.role == roleLeader {
+			if node.raft.getRole() == roleLeader {
 				downNode = node
 				downKVStore = node.KVStore
 			} else {
@@ -286,7 +288,37 @@ func TestThreeNodeLinear(t *testing.T) {
 		go func() {
 			time.Sleep(50 * time.Millisecond) // small initial delay
 			downNode.pause()
-			time.Sleep(50 * time.Millisecond) // > 2x election timeout
+			time.Sleep(50 * time.Millisecond) // > election timeout
+			downNode.unpause()
+		}()
+		tester(t, downKVStore, upKVStore, time.Second)
+	})
+	t.Run("follower is dropped and brought back online", func(t *testing.T) {
+		raftNodes, stoppers := setup3Nodes(t)
+		for _, stopper := range stoppers {
+			defer stopper()
+		}
+
+		var (
+			downNode               *Node
+			downKVStore, upKVStore *KVStore
+		)
+
+		// TODO(ulysseses): potential data race if downNode becomes leader
+		// immediately after we assign downNode = node
+		for _, node := range raftNodes {
+			if node.raft.getRole() == roleFollower {
+				downNode = node
+				downKVStore = node.KVStore
+			} else if node.raft.getRole() == roleLeader {
+				upKVStore = node.KVStore
+			}
+		}
+
+		go func() {
+			time.Sleep(50 * time.Millisecond) // small initial delay
+			downNode.pause()
+			time.Sleep(50 * time.Millisecond) // > election timeout
 			downNode.unpause()
 		}()
 		tester(t, downKVStore, upKVStore, time.Second)

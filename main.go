@@ -10,9 +10,9 @@ import (
 )
 
 func myConfiguration(id uint64) (*raft.Configuration, error) {
-	// if id < 1 || id > 3 {
-	// 	return nil, fmt.Errorf("id must be in [1, 3] range. Got: %d", id)
-	// }
+	if id != 111 && id != 222 && id != 333 {
+		return nil, fmt.Errorf("id must be 111, 222, or 333; got %d", id)
+	}
 	return &raft.Configuration{
 		RecvChanSize: 100,
 		SendChanSize: 100,

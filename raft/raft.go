@@ -69,6 +69,67 @@ type raft struct {
 	initialLeaderElected           bool
 }
 
+func newRaft(c *Configuration) raftFacade {
+	r := &raft{}
+	if c.RecvChanSize > 0 {
+		r.recvChan = make(chan *raftpb.Message, c.RecvChanSize)
+	} else {
+		r.recvChan = make(chan *raftpb.Message)
+	}
+
+	if c.SendChanSize > 0 {
+		r.sendChan = make(chan *raftpb.Message, c.SendChanSize)
+	} else {
+		r.sendChan = make(chan *raftpb.Message)
+	}
+
+	r.applyChan = make(chan []byte)
+	r.applyAckChan = make(chan struct{})
+
+	if c.ProposeChanSize > 0 {
+		r.proposeChan = make(chan []byte, c.ProposeChanSize)
+	} else {
+		r.proposeChan = make(chan []byte)
+	}
+
+	for peer := range c.Peers {
+		r.peers = append(r.peers, peer)
+	}
+	r.minElectionTimeoutTicks = c.MinElectionTimeoutTicks
+	r.maxElectionTimeoutTicks = c.MaxElectionTimeoutTicks
+	r.heartbeatTicks = c.HeartbeatTicks
+	r.tickMs = c.TickMs
+	electionTimeoutTicks := rand.Intn(r.maxElectionTimeoutTicks-r.minElectionTimeoutTicks) +
+		r.minElectionTimeoutTicks
+	electionTimeoutMs := time.Duration(electionTimeoutTicks*r.tickMs) * time.Millisecond
+
+	// Initialize timers but don't start them
+	// They will start when loop starts.
+	r.electionTimeoutTimer = newTimer(electionTimeoutMs)
+	r.electionTimeoutTimer.Stop()
+	r.heartbeatTimer = newTimer(time.Duration(r.heartbeatTicks*r.tickMs) * time.Millisecond)
+	r.heartbeatTimer.Stop()
+
+	r.role = roleFollower
+	r.nextIndex = map[uint64]uint64{}
+	r.matchIndex = map[uint64]uint64{}
+	for _, peer := range r.peers {
+		r.nextIndex[peer] = 2
+		r.matchIndex[peer] = 1
+	}
+
+	r.id = c.ID
+	r.log = []*raftpb.Entry{{Term: 1, Index: 1, Data: []byte{}}}
+	r.startIndex = 1
+	r.term = 1
+	r.applied = 1
+	r.committed = 1
+	r.quorumSize = (len(r.peers) / 2) + 1
+	r.stop = make(chan struct{})
+	r.initialLeaderElectedSignalChan = make(chan struct{})
+	return r
+}
+
 // Rules for Servers
 //
 // All Servers:
@@ -354,8 +415,8 @@ func (r *raft) loop() {
 					sendChan <- resp
 					r.leader = msg.Sender
 					if !r.initialLeaderElected {
+						close(initialLeaderElectedSignalChan)
 						r.initialLeaderElected = true
-						initialLeaderElectedSignalChan <- struct{}{}
 					}
 				default:
 
@@ -430,8 +491,8 @@ func (r *raft) becomeLeader() {
 	r.matchIndex[r.id] = r.startIndex + uint64(len(r.log)) - 1
 	r.nextIndex[r.id] = r.matchIndex[r.id] + 1
 	if !r.initialLeaderElected {
+		close(r.initialLeaderElectedSignalChan)
 		r.initialLeaderElected = true
-		r.initialLeaderElectedSignalChan <- struct{}{}
 	}
 
 	for _, peerID := range r.peers {
@@ -490,14 +551,40 @@ func (r *raft) registerLeader(leader uint64) {
 	r.resetElectionTimeout()
 	r.heartbeatTimer.Stop()
 	if !r.initialLeaderElected {
+		close(r.initialLeaderElectedSignalChan)
 		r.initialLeaderElected = true
-		r.initialLeaderElectedSignalChan <- struct{}{}
 	}
 }
 
 type raftFacade interface {
 	raftApplicationFacade
 	raftTransportFacade
+	loop()
+	getID() uint64
+	getRole() role
+	waitUntilInitialLeaderElected()
+	pause()
+	unpause()
+}
+
+func (r *raft) getID() uint64 {
+	return r.id
+}
+
+func (r *raft) getRole() role {
+	return r.role
+}
+
+func (r *raft) waitUntilInitialLeaderElected() {
+	<-r.initialLeaderElectedSignalChan
+}
+
+func (r *raft) pause() {
+	r.stop <- struct{}{}
+}
+
+func (r *raft) unpause() {
+	go r.loop()
 }
 
 type raftApplicationFacade interface {
