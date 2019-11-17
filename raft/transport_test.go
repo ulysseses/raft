@@ -51,12 +51,69 @@ func newFakeRaftTransportFacade() *fakeRaftTransportFacade {
 	return r
 }
 
-func TestCommunicateWithPeer(t *testing.T) {
+type serverState struct {
+	lis        net.Listener
+	grpcServer *grpc.Server
+	transport  *transport
+}
+
+func prepareServerState(unixSocketPath string) (*serverState, error) {
 	fakeRaft := newFakeRaftTransportFacade()
 	transport := &transport{
 		raftTransportFacade: fakeRaft,
+		stopChan:            make(chan struct{}),
+		peerClients:         map[uint64]raftpb.RaftService_CommunicateWithPeerClient{},
 	}
 
+	lis, err := net.Listen("unix", unixSocketPath)
+	if err != nil {
+		return nil, err
+	}
+	grpcServer := grpc.NewServer()
+	raftpb.RegisterRaftServiceServer(grpcServer, transport)
+	go grpcServer.Serve(lis)
+
+	return &serverState{
+		lis:        lis,
+		grpcServer: grpcServer,
+		transport:  transport,
+	}, nil
+}
+
+func (ss *serverState) stop() {
+	ss.grpcServer.Stop()
+	ss.lis.Close()
+}
+
+type clientState struct {
+	conn   *grpc.ClientConn
+	stream raftpb.RaftService_CommunicateWithPeerClient
+}
+
+func prepareClientState(unixSocketPath string) (*clientState, error) {
+	conn, err := grpc.Dial(
+		fmt.Sprintf("unix://%s", unixSocketPath),
+		grpc.WithInsecure(),
+		grpc.WithBlock())
+	if err != nil {
+		return nil, err
+	}
+	client := raftpb.NewRaftServiceClient(conn)
+	stream, err := client.CommunicateWithPeer(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	return &clientState{
+		conn:   conn,
+		stream: stream,
+	}, nil
+}
+
+func (cs *clientState) stop() {
+	cs.conn.Close()
+}
+
+func TestCommunicateWithPeer(t *testing.T) {
 	tmpDir, err := ioutil.TempDir("", "")
 	if err != nil {
 		t.Fatal(err)
@@ -64,31 +121,18 @@ func TestCommunicateWithPeer(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	tmpUnixSocketPath := filepath.Join(tmpDir, "TestCommunicateWithPeer.sock")
-	lis, err := net.Listen("unix", tmpUnixSocketPath)
+	ss, err := prepareServerState(tmpUnixSocketPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lis.Close()
+	defer ss.stop()
 
-	grpcServer := grpc.NewServer()
-	raftpb.RegisterRaftServiceServer(grpcServer, transport)
-	go grpcServer.Serve(lis)
-	defer grpcServer.Stop()
-
-	conn, err := grpc.Dial(
-		fmt.Sprintf("unix://%s", tmpUnixSocketPath),
-		grpc.WithInsecure(),
-		grpc.WithBlock())
+	cs, err := prepareClientState(tmpUnixSocketPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer cs.stop()
 
-	client := raftpb.NewRaftServiceClient(conn)
-	stream, err := client.CommunicateWithPeer(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
 	msgs := []*raftpb.Message{
 		&raftpb.Message{},
 		&raftpb.Message{},
@@ -96,7 +140,7 @@ func TestCommunicateWithPeer(t *testing.T) {
 	}
 	go func() {
 		for _, msg := range msgs {
-			if err := stream.Send(msg); err != nil {
+			if err := cs.stream.Send(msg); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -121,7 +165,10 @@ func TestCommunicateWithPeer(t *testing.T) {
 		return true
 	}
 
-	complete := verifyReceivedMessages(fakeRaft, msgs, 500*time.Millisecond)
+	complete := verifyReceivedMessages(
+		ss.transport.raftTransportFacade.(*fakeRaftTransportFacade),
+		msgs,
+		500*time.Millisecond)
 	if !complete {
 		t.Error("did not receive all messages in time")
 	}
@@ -139,66 +186,56 @@ func TestSendLoop(t *testing.T) {
 		222: filepath.Join(tmpDir, "TestSendLoop222.sock"),
 		333: filepath.Join(tmpDir, "TestSendLoop333.sock"),
 	}
-	transports := map[uint64]*transport{}
+	serverStates := map[uint64]*serverState{}
+	clientStates := map[uint64]map[uint64]*clientState{}
 
 	// Start all servers
 	for serverID, serverAddr := range peers {
-		lis, err := net.Listen("unix", serverAddr)
+		ss, err := prepareServerState(serverAddr)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer lis.Close()
 
-		fakeRaft := newFakeRaftTransportFacade()
-		defer fakeRaft.stopRecvLoop()
-		go fakeRaft.recvLoop()
-
-		transport := &transport{
-			raftTransportFacade: fakeRaft,
-			stopChan:            make(chan struct{}),
-			peerClients:         map[uint64]raftpb.RaftService_CommunicateWithPeerClient{},
-		}
-
-		grpcServer := grpc.NewServer()
-		raftpb.RegisterRaftServiceServer(grpcServer, transport)
-		go grpcServer.Serve(lis)
-		defer grpcServer.Stop()
-
-		transports[serverID] = transport
+		serverStates[serverID] = ss
 	}
 
 	// for each transport, connect to all servers
-	for serverID, transport := range transports {
+	for serverID, ss := range serverStates {
+		clientStates[serverID] = map[uint64]*clientState{}
 		for peerID, peerAddr := range peers {
 			if serverID == peerID {
 				continue
 			}
 
-			conn, err := grpc.Dial(
-				fmt.Sprintf("unix://%s", peerAddr),
-				grpc.WithInsecure(),
-				grpc.WithBlock())
+			cs, err := prepareClientState(peerAddr)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer conn.Close()
+			defer cs.stop()
 
-			client := raftpb.NewRaftServiceClient(conn)
-			stream, err := client.CommunicateWithPeer(context.Background())
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			transport.peerClients[peerID] = stream
+			clientStates[serverID][peerID] = cs
+			ss.transport.peerClients[peerID] = cs.stream
 		}
 	}
 
-	for _, transport := range transports {
+	for serverID, ss := range serverStates {
+		transport := ss.transport
+		raft := ss.transport.raftTransportFacade.(*fakeRaftTransportFacade)
+
+		go raft.recvLoop()
 		go transport.sendLoop()
-		defer transport.stop()
+
+		defer func(serverID uint64, ss *serverState) {
+			for _, cs := range clientStates[serverID] {
+				cs.stop()
+			}
+			ss.stop()
+			transport.stop()
+			raft.stopRecvLoop()
+		}(serverID, ss)
 	}
 
-	senderTransport := transports[111].raftTransportFacade.(*fakeRaftTransportFacade)
+	senderTransport := serverStates[111].transport.raftTransportFacade.(*fakeRaftTransportFacade)
 
 	// verifySentMessages verifies that each message in `msgs` was sent within `timeout`.
 	verifySentMessages := func(

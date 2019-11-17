@@ -23,7 +23,11 @@ func (t *transport) CommunicateWithPeer(stream raftpb.RaftService_CommunicateWit
 		if err != nil {
 			return err
 		}
-		t.raftTransportFacade.recv() <- msg
+		select {
+		case <-t.stopChan:
+			return nil
+		case t.raftTransportFacade.recv() <- msg:
+		}
 	}
 }
 
