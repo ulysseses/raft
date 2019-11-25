@@ -11,6 +11,7 @@ import (
 	"strconv"
 
 	"github.com/ulysseses/raft/raft"
+	"github.com/valyala/fasthttp"
 )
 
 var port = flag.Int("port", 8080, "port")
@@ -19,30 +20,23 @@ type httpKVAPI struct {
 	kvStore *raft.KVStore
 }
 
-func (h *httpKVAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	key := r.RequestURI
-	defer r.Body.Close()
-
-	switch r.Method {
-	case "PUT":
-		v, err := ioutil.ReadAll(r.Body)
-		if err != nil {
-			log.Printf("Failed to read on PUT (%v)\n", err)
-			http.Error(w, "Failed on PUT", http.StatusBadRequest)
-			return
-		}
+func (h *httpKVAPI) HandleFastHTTP(ctx *fasthttp.RequestCtx) {
+	// fmt.Fprintf(ctx, "Hello, world! Requested path is %q. Foobar is %q",
+	// 	ctx.Path(), "foobar")
+	key := ctx.RequestURI()
+	if ctx.IsPut() {
+		v := ctx.Request.Body()
 		// Warning: Propose does not commit synchronously
-		h.kvStore.Propose(key, string(v))
-	case "GET":
-		if v, ok := h.kvStore.Get(key); ok {
-			w.Write([]byte(v))
+		h.kvStore.Propose(string(key), string(v))
+	} else if ctx.IsGet() {
+		if v, ok := h.kvStore.Get(string(key)); ok {
+			ctx.WriteString(v)
 		} else {
-			http.Error(w, "Failed to GET", http.StatusNotFound)
+			ctx.Error("Failed to GET", http.StatusNotFound)
 		}
-	default:
-		w.Header().Set("Allow", "PUT")
-		w.Header().Set("Allow", "GET")
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	} else {
+		ctx.Response.Header.Set("Allow", "PUT, GET")
+		ctx.Error("Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
@@ -58,7 +52,7 @@ func main() {
 		SendChanSize: 100,
 		ID:           111,
 		Peers: map[uint64]string{
-			111: fmt.Sprintf("unix://%s", filepath.Join(tmpDir, "TestThreeNodeLinear111.sock")),
+			111: fmt.Sprintf("unix://%s", filepath.Join(tmpDir, "one_node_http_server.sock")),
 		},
 		MinElectionTimeoutTicks: 10,
 		MaxElectionTimeoutTicks: 20,
@@ -71,20 +65,8 @@ func main() {
 	}
 	defer raftNode.Stop()
 
-	kvStore := raftNode.KVStore
-
-	server := http.Server{
-		Addr: ":" + strconv.Itoa(*port),
-		Handler: &httpKVAPI{
-			kvStore: kvStore,
-		},
-	}
-
-	if err := server.ListenAndServe(); err != nil {
+	httpKVAPI := &httpKVAPI{kvStore: raftNode.KVStore}
+	if err := fasthttp.ListenAndServe(":"+strconv.Itoa(*port), httpKVAPI.HandleFastHTTP); err != nil {
 		log.Fatal(err)
 	}
-}
-
-func handler(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintln(w, "hello world!")
 }
