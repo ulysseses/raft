@@ -21,8 +21,6 @@ type httpKVAPI struct {
 }
 
 func (h *httpKVAPI) HandleFastHTTP(ctx *fasthttp.RequestCtx) {
-	// fmt.Fprintf(ctx, "Hello, world! Requested path is %q. Foobar is %q",
-	// 	ctx.Path(), "foobar")
 	key := ctx.RequestURI()
 	if ctx.IsPut() {
 		v := ctx.Request.Body()
