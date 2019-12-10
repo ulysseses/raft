@@ -20,6 +20,7 @@ import (
 type fakeRaftTransportFacade struct {
 	recvChan chan *raftpb.Message
 	sendChan chan *raftpb.Message
+	stopChan chan struct{}
 }
 
 // recv implements raftTransportFacade interface.
@@ -34,19 +35,25 @@ func (r *fakeRaftTransportFacade) send() <-chan *raftpb.Message {
 
 // recvLoop receives messages from transport but does nothing with them.
 func (r *fakeRaftTransportFacade) recvLoop() {
-	for range r.recvChan {
+	for {
+		select {
+		case <-r.recvChan:
+		case <-r.stopChan:
+			return
+		}
 	}
 }
 
 // stopRecvLoop stops recvLoop goroutine.
 func (r *fakeRaftTransportFacade) stopRecvLoop() {
-	close(r.recvChan)
+	r.stopChan <- struct{}{}
 }
 
 func newFakeRaftTransportFacade() *fakeRaftTransportFacade {
 	r := &fakeRaftTransportFacade{
 		recvChan: make(chan *raftpb.Message),
 		sendChan: make(chan *raftpb.Message),
+		stopChan: make(chan struct{}),
 	}
 	return r
 }
