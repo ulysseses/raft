@@ -196,7 +196,7 @@ func TestThreeNodeLinear(t *testing.T) {
 				count++
 			}
 		}
-		tester(t, kvStoreW, kvStoreR, 200*time.Millisecond)
+		tester(t, kvStoreW, kvStoreR, 400*time.Millisecond)
 	})
 	t.Run("writer is leader, reader is leader", func(t *testing.T) {
 		raftNodes, closers := setup3Nodes(t)
@@ -216,7 +216,7 @@ func TestThreeNodeLinear(t *testing.T) {
 				break
 			}
 		}
-		tester(t, kvStoreW, kvStoreR, 200*time.Millisecond)
+		tester(t, kvStoreW, kvStoreR, 400*time.Millisecond)
 	})
 	t.Run("writer is follower, reader is follower", func(t *testing.T) {
 		raftNodes, closers := setup3Nodes(t)
@@ -236,7 +236,7 @@ func TestThreeNodeLinear(t *testing.T) {
 				break
 			}
 		}
-		tester(t, kvStoreW, kvStoreR, 200*time.Millisecond)
+		tester(t, kvStoreW, kvStoreR, 400*time.Millisecond)
 	})
 	t.Run("writer is follower, reader is leader", func(t *testing.T) {
 		raftNodes, closers := setup3Nodes(t)
@@ -262,7 +262,7 @@ func TestThreeNodeLinear(t *testing.T) {
 				count++
 			}
 		}
-		tester(t, kvStoreW, kvStoreR, 200*time.Millisecond)
+		tester(t, kvStoreW, kvStoreR, 400*time.Millisecond)
 	})
 	t.Run("leader is dropped and brought back online", func(t *testing.T) {
 		raftNodes, stoppers := setup3Nodes(t)
