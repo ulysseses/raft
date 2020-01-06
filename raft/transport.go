@@ -15,6 +15,7 @@ type transport struct {
 }
 
 func (t *transport) CommunicateWithPeer(stream raftpb.RaftService_CommunicateWithPeerServer) error {
+	recvChan := t.raftTransportFacade.recv()
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
@@ -26,7 +27,7 @@ func (t *transport) CommunicateWithPeer(stream raftpb.RaftService_CommunicateWit
 		select {
 		case <-t.stopChan:
 			return nil
-		case t.raftTransportFacade.recv() <- msg:
+		case recvChan <- msg:
 		}
 	}
 }
@@ -44,11 +45,12 @@ func (t *transport) sendLoop() {
 		}
 		panic("")
 	}()
+	sendChan := t.raftTransportFacade.send()
 	for {
 		select {
 		case <-t.stopChan:
 			return
-		case msg := <-t.raftTransportFacade.send():
+		case msg := <-sendChan:
 			client, ok := t.peerClients[msg.Recipient]
 			if !ok {
 				panic(fmt.Sprintf("msg: %s", msg.String()))

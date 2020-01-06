@@ -9,7 +9,7 @@ import (
 	"github.com/ulysseses/raft/raftpb"
 )
 
-type role int
+type role int32
 
 const (
 	roleFollower role = iota
