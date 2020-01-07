@@ -19,9 +19,9 @@ const (
 
 type raft struct {
 	// buffered and owned by transport
-	recvChan chan *raftpb.Message
+	recvChan chan raftpb.Message
 	// buffered and owned by transport
-	sendChan chan *raftpb.Message
+	sendChan chan raftpb.Message
 
 	// unbuffered
 	applyChan chan []byte
@@ -72,15 +72,15 @@ type raft struct {
 func newRaft(c *Configuration) raftFacade {
 	r := &raft{}
 	if c.RecvChanSize > 0 {
-		r.recvChan = make(chan *raftpb.Message, c.RecvChanSize)
+		r.recvChan = make(chan raftpb.Message, c.RecvChanSize)
 	} else {
-		r.recvChan = make(chan *raftpb.Message)
+		r.recvChan = make(chan raftpb.Message)
 	}
 
 	if c.SendChanSize > 0 {
-		r.sendChan = make(chan *raftpb.Message, c.SendChanSize)
+		r.sendChan = make(chan raftpb.Message, c.SendChanSize)
 	} else {
-		r.sendChan = make(chan *raftpb.Message)
+		r.sendChan = make(chan raftpb.Message)
 	}
 
 	r.applyChan = make(chan []byte)
@@ -188,12 +188,12 @@ func (r *raft) loop() {
 	defer r.electionTimeoutTimer.Stop()
 	defer r.heartbeatTimer.Stop()
 	var (
-		recvChan                       <-chan *raftpb.Message = r.recvChan
-		sendChan                       chan<- *raftpb.Message = r.sendChan
-		applyChan                      chan<- []byte          = r.applyChan
-		applyAckChan                   <-chan struct{}        = r.applyAckChan
-		stop                           <-chan struct{}        = r.stop
-		initialLeaderElectedSignalChan chan<- struct{}        = r.initialLeaderElectedSignalChan
+		recvChan                       <-chan raftpb.Message = r.recvChan
+		sendChan                       chan<- raftpb.Message = r.sendChan
+		applyChan                      chan<- []byte         = r.applyChan
+		applyAckChan                   <-chan struct{}       = r.applyAckChan
+		stop                           <-chan struct{}       = r.stop
+		initialLeaderElectedSignalChan chan<- struct{}       = r.initialLeaderElectedSignalChan
 
 		dataToApply []byte = nil
 	)
@@ -320,7 +320,7 @@ func (r *raft) loop() {
 				//     follower
 				switch msg.Message.(type) {
 				case *raftpb.Message_VoteResponse:
-					resp := getVoteResponse(msg)
+					resp := getVoteResponse(&msg)
 					if resp.Granted {
 						r.votes[msg.Sender] = true
 					}
@@ -355,7 +355,7 @@ func (r *raft) loop() {
 					//   2. If votedFor is null or candidateId, and candidate's log is at
 					//      least as up-to-date as receiver's log, grant vote (3.4, 3.6)
 					if _, ok := msg.Message.(*raftpb.Message_VoteRequest); ok {
-						req := getVoteRequest(msg)
+						req := getVoteRequest(&msg)
 						if msg.Term >= r.term &&
 							(r.votedFor == 0 || r.votedFor == msg.Sender) &&
 							(msg.Term > r.term || req.Index >= r.log[len(r.log)-1].Index) {
@@ -370,7 +370,7 @@ func (r *raft) loop() {
 					// AppendEntries RPC:
 					// Receiver Implementation:
 					r.registerLeader(msg.Sender)
-					req := getAppendRequest(msg)
+					req := getAppendRequest(&msg)
 
 					//   1. Reply false if term < currentTerm (3.3)
 					//   2. Reply false if log doesn't contain an entry at prevLogIndex
@@ -431,7 +431,7 @@ func (r *raft) loop() {
 				//       decrement nextIndex and retry (3.5)
 				switch msg.Message.(type) {
 				case *raftpb.Message_AppendResponse:
-					resp := getAppendResponse(msg)
+					resp := getAppendResponse(&msg)
 					if resp.Success {
 						r.nextIndex[msg.Sender] = resp.Index + 1
 						r.matchIndex[msg.Sender] = resp.Index
@@ -456,7 +456,7 @@ func (r *raft) loop() {
 						r.committed = n
 					}
 				case *raftpb.Message_ProposeRequest:
-					req := getProposeRequest(msg)
+					req := getProposeRequest(&msg)
 					entry := &raftpb.Entry{
 						Term:  r.term,
 						Index: r.log[len(r.log)-1].Index + 1,
@@ -594,8 +594,8 @@ type raftApplicationFacade interface {
 }
 
 type raftTransportFacade interface {
-	recv() chan<- *raftpb.Message
-	send() <-chan *raftpb.Message
+	recv() chan<- raftpb.Message
+	send() <-chan raftpb.Message
 }
 
 func (r *raft) apply() <-chan []byte {
@@ -610,11 +610,11 @@ func (r *raft) propose() chan<- []byte {
 	return r.proposeChan
 }
 
-func (r *raft) recv() chan<- *raftpb.Message {
+func (r *raft) recv() chan<- raftpb.Message {
 	return r.recvChan
 }
 
-func (r *raft) send() <-chan *raftpb.Message {
+func (r *raft) send() <-chan raftpb.Message {
 	return r.sendChan
 }
 
@@ -638,8 +638,8 @@ func getProposeRequest(msg *raftpb.Message) *raftpb.ProposeRequest {
 	return msg.Message.(*raftpb.Message_ProposeRequest).ProposeRequest
 }
 
-func buildAppendRequest(term, sender, recipient uint64, req *raftpb.AppendRequest) *raftpb.Message {
-	return &raftpb.Message{
+func buildAppendRequest(term, sender, recipient uint64, req *raftpb.AppendRequest) raftpb.Message {
+	return raftpb.Message{
 		Term:      term,
 		Sender:    sender,
 		Recipient: recipient,
@@ -649,8 +649,8 @@ func buildAppendRequest(term, sender, recipient uint64, req *raftpb.AppendReques
 	}
 }
 
-func buildAppendResponse(term, sender, recipient uint64, resp *raftpb.AppendResponse) *raftpb.Message {
-	return &raftpb.Message{
+func buildAppendResponse(term, sender, recipient uint64, resp *raftpb.AppendResponse) raftpb.Message {
+	return raftpb.Message{
 		Term:      term,
 		Sender:    sender,
 		Recipient: recipient,
@@ -660,8 +660,8 @@ func buildAppendResponse(term, sender, recipient uint64, resp *raftpb.AppendResp
 	}
 }
 
-func buildVoteRequest(term, sender, recipient uint64, req *raftpb.VoteRequest) *raftpb.Message {
-	return &raftpb.Message{
+func buildVoteRequest(term, sender, recipient uint64, req *raftpb.VoteRequest) raftpb.Message {
+	return raftpb.Message{
 		Term:      term,
 		Sender:    sender,
 		Recipient: recipient,
@@ -671,8 +671,8 @@ func buildVoteRequest(term, sender, recipient uint64, req *raftpb.VoteRequest) *
 	}
 }
 
-func buildVoteResponse(term, sender, recipient uint64, resp *raftpb.VoteResponse) *raftpb.Message {
-	return &raftpb.Message{
+func buildVoteResponse(term, sender, recipient uint64, resp *raftpb.VoteResponse) raftpb.Message {
+	return raftpb.Message{
 		Term:      term,
 		Sender:    sender,
 		Recipient: recipient,
@@ -682,8 +682,8 @@ func buildVoteResponse(term, sender, recipient uint64, resp *raftpb.VoteResponse
 	}
 }
 
-func buildProposeRequest(term, sender, recipient uint64, req *raftpb.ProposeRequest) *raftpb.Message {
-	return &raftpb.Message{
+func buildProposeRequest(term, sender, recipient uint64, req *raftpb.ProposeRequest) raftpb.Message {
+	return raftpb.Message{
 		Term:      term,
 		Sender:    sender,
 		Recipient: recipient,

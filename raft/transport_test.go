@@ -18,18 +18,18 @@ import (
 
 // fakeRaftTransportFacade implements raftTransportFacade interface.
 type fakeRaftTransportFacade struct {
-	recvChan chan *raftpb.Message
-	sendChan chan *raftpb.Message
+	recvChan chan raftpb.Message
+	sendChan chan raftpb.Message
 	stopChan chan struct{}
 }
 
 // recv implements raftTransportFacade interface.
-func (r *fakeRaftTransportFacade) recv() chan<- *raftpb.Message {
+func (r *fakeRaftTransportFacade) recv() chan<- raftpb.Message {
 	return r.recvChan
 }
 
 // send implements raftTransportFacade interface.
-func (r *fakeRaftTransportFacade) send() <-chan *raftpb.Message {
+func (r *fakeRaftTransportFacade) send() <-chan raftpb.Message {
 	return r.sendChan
 }
 
@@ -51,8 +51,8 @@ func (r *fakeRaftTransportFacade) stopRecvLoop() {
 
 func newFakeRaftTransportFacade() *fakeRaftTransportFacade {
 	r := &fakeRaftTransportFacade{
-		recvChan: make(chan *raftpb.Message),
-		sendChan: make(chan *raftpb.Message),
+		recvChan: make(chan raftpb.Message),
+		sendChan: make(chan raftpb.Message),
 		stopChan: make(chan struct{}),
 	}
 	return r
@@ -164,7 +164,7 @@ func TestCommunicateWithPeer(t *testing.T) {
 			case <-time.After(timeout):
 				return false
 			case gotMsg := <-r.recvChan:
-				if !proto.Equal(wantMsgs[i], gotMsg) {
+				if !proto.Equal(wantMsgs[i], &gotMsg) {
 					return false
 				}
 			}
@@ -247,7 +247,7 @@ func TestSendLoop(t *testing.T) {
 	// verifySentMessages verifies that each message in `msgs` was sent within `timeout`.
 	verifySentMessages := func(
 		r *fakeRaftTransportFacade,
-		msgs []*raftpb.Message,
+		msgs []raftpb.Message,
 		timeout time.Duration,
 	) bool {
 		for i := 0; i < len(msgs); i++ {
@@ -262,9 +262,9 @@ func TestSendLoop(t *testing.T) {
 
 	complete := verifySentMessages(
 		senderTransport,
-		[]*raftpb.Message{
-			&raftpb.Message{Recipient: 222},
-			&raftpb.Message{Recipient: 333},
+		[]raftpb.Message{
+			raftpb.Message{Recipient: 222},
+			raftpb.Message{Recipient: 333},
 		},
 		500*time.Millisecond,
 	)

@@ -27,7 +27,7 @@ func (t *transport) CommunicateWithPeer(stream raftpb.RaftService_CommunicateWit
 		select {
 		case <-t.stopChan:
 			return nil
-		case recvChan <- msg:
+		case recvChan <- *msg:
 		}
 	}
 }
@@ -55,7 +55,7 @@ func (t *transport) sendLoop() {
 			if !ok {
 				panic(fmt.Sprintf("msg: %s", msg.String()))
 			}
-			if err := client.Send(msg); err != nil && err != io.EOF {
+			if err := client.Send(&msg); err != nil && err != io.EOF {
 				panic(fmt.Sprintf("msg: %s, err: %v", msg.String(), err))
 			}
 		}
