@@ -49,7 +49,7 @@ type raft struct {
 
 	id uint64
 	// initially contains a dummy entry of index 1 and term 1
-	log []*raftpb.Entry
+	log []raftpb.Entry
 	// initially at 1 (for the dummy entry)
 	startIndex uint64
 	// starts off at 1
@@ -119,7 +119,7 @@ func newRaft(c *Configuration) raftFacade {
 	}
 
 	r.id = c.ID
-	r.log = []*raftpb.Entry{{Term: 1, Index: 1, Data: []byte{}}}
+	r.log = []raftpb.Entry{{Term: 1, Index: 1, Data: []byte{}}}
 	r.startIndex = 1
 	r.term = 1
 	r.applied = 1
@@ -190,10 +190,10 @@ func (r *raft) loop() {
 	var (
 		recvChan                       <-chan raftpb.Message = r.recvChan
 		sendChan                       chan<- raftpb.Message = r.sendChan
-		applyChan                      chan<- []byte         = r.applyChan
-		applyAckChan                   <-chan struct{}       = r.applyAckChan
-		stop                           <-chan struct{}       = r.stop
-		initialLeaderElectedSignalChan chan<- struct{}       = r.initialLeaderElectedSignalChan
+		applyChan                      chan<- []byte             = r.applyChan
+		applyAckChan                   <-chan struct{}           = r.applyAckChan
+		stop                           <-chan struct{}           = r.stop
+		initialLeaderElectedSignalChan chan<- struct{}           = r.initialLeaderElectedSignalChan
 
 		dataToApply []byte = nil
 	)
@@ -219,7 +219,7 @@ func (r *raft) loop() {
 			//   * If command received from client: append entry to local log,
 			//     respond after entry applied to state machine (3.5)
 			if r.role == roleLeader {
-				entry := &raftpb.Entry{
+				entry := raftpb.Entry{
 					Term:  r.term,
 					Index: r.startIndex + uint64(len(r.log)),
 					Data:  proposedData,
@@ -230,7 +230,7 @@ func (r *raft) loop() {
 					r.committed++
 				}
 			} else if r.role == roleFollower {
-				innerReq := &raftpb.ProposeRequest{
+				innerReq := raftpb.ProposeRequest{
 					Data: proposedData,
 				}
 				if r.leader != 0 {
@@ -266,8 +266,8 @@ func (r *raft) loop() {
 					continue
 				}
 				nextIndex := r.nextIndex[peerID]
-				entries := append([]*raftpb.Entry{}, r.log[nextIndex-r.startIndex:]...)
-				innerReq := &raftpb.AppendRequest{
+				entries := append([]raftpb.Entry{}, r.log[nextIndex-r.startIndex:]...)
+				innerReq := raftpb.AppendRequest{
 					PrevIndex: nextIndex - 1,
 					PrevTerm:  r.log[nextIndex-1-r.startIndex].Term,
 					Entries:   entries,
@@ -320,9 +320,9 @@ func (r *raft) loop() {
 				//     follower
 				switch msg.Message.(type) {
 				case *raftpb.Message_VoteResponse:
-					resp := getVoteResponse(&msg)
+					resp := getVoteResponse(msg)
 					if resp.Granted {
-						r.votes[msg.Sender] = true
+						r.votes[msg.From] = true
 					}
 					voteCount := 0
 					for _, granted := range r.votes {
@@ -355,22 +355,22 @@ func (r *raft) loop() {
 					//   2. If votedFor is null or candidateId, and candidate's log is at
 					//      least as up-to-date as receiver's log, grant vote (3.4, 3.6)
 					if _, ok := msg.Message.(*raftpb.Message_VoteRequest); ok {
-						req := getVoteRequest(&msg)
+						req := getVoteRequest(msg)
 						if msg.Term >= r.term &&
-							(r.votedFor == 0 || r.votedFor == msg.Sender) &&
+							(r.votedFor == 0 || r.votedFor == msg.From) &&
 							(msg.Term > r.term || req.Index >= r.log[len(r.log)-1].Index) {
-							r.votedFor = msg.Sender
+							r.votedFor = msg.From
 						}
 						resp := buildVoteResponse(
-							r.term, r.id, msg.Sender,
-							&raftpb.VoteResponse{Granted: r.votedFor == msg.Sender})
+							r.term, r.id, msg.From,
+							raftpb.VoteResponse{Granted: r.votedFor == msg.From})
 						sendChan <- resp
 					}
 				case *raftpb.Message_AppendRequest:
 					// AppendEntries RPC:
 					// Receiver Implementation:
-					r.registerLeader(msg.Sender)
-					req := getAppendRequest(&msg)
+					r.registerLeader(msg.From)
+					req := getAppendRequest(msg)
 
 					//   1. Reply false if term < currentTerm (3.3)
 					//   2. Reply false if log doesn't contain an entry at prevLogIndex
@@ -406,14 +406,14 @@ func (r *raft) loop() {
 					}
 
 					resp := buildAppendResponse(
-						r.term, r.id, msg.Sender,
-						&raftpb.AppendResponse{
+						r.term, r.id, msg.To,
+						raftpb.AppendResponse{
 							Success: success,
 							Index:   r.log[len(r.log)-1].Index,
 						},
 					)
 					sendChan <- resp
-					r.leader = msg.Sender
+					r.leader = msg.From
 					if !r.initialLeaderElected {
 						close(initialLeaderElectedSignalChan)
 						r.initialLeaderElected = true
@@ -431,12 +431,12 @@ func (r *raft) loop() {
 				//       decrement nextIndex and retry (3.5)
 				switch msg.Message.(type) {
 				case *raftpb.Message_AppendResponse:
-					resp := getAppendResponse(&msg)
+					resp := getAppendResponse(msg)
 					if resp.Success {
-						r.nextIndex[msg.Sender] = resp.Index + 1
-						r.matchIndex[msg.Sender] = resp.Index
+						r.nextIndex[msg.From] = resp.Index + 1
+						r.matchIndex[msg.From] = resp.Index
 					} else {
-						r.nextIndex[msg.Sender]--
+						r.nextIndex[msg.From]--
 					}
 
 					// Leaders:
@@ -456,8 +456,8 @@ func (r *raft) loop() {
 						r.committed = n
 					}
 				case *raftpb.Message_ProposeRequest:
-					req := getProposeRequest(&msg)
-					entry := &raftpb.Entry{
+					req := getProposeRequest(msg)
+					entry := raftpb.Entry{
 						Term:  r.term,
 						Index: r.log[len(r.log)-1].Index + 1,
 						Data:  req.Data,
@@ -499,7 +499,7 @@ func (r *raft) becomeLeader() {
 		if peerID == r.id {
 			continue
 		}
-		innerReq := &raftpb.AppendRequest{
+		innerReq := raftpb.AppendRequest{
 			PrevIndex: r.nextIndex[peerID] - 1,
 			PrevTerm:  r.log[r.nextIndex[peerID]-1-r.startIndex].Term,
 			Committed: r.committed,
@@ -527,7 +527,7 @@ func (r *raft) becomeCandidate() {
 		if peerID == r.id {
 			continue
 		}
-		innerReq := &raftpb.VoteRequest{
+		innerReq := raftpb.VoteRequest{
 			Index: r.startIndex + uint64(len(r.log)) - 1,
 		}
 		req := buildVoteRequest(
@@ -618,77 +618,77 @@ func (r *raft) send() <-chan raftpb.Message {
 	return r.sendChan
 }
 
-func getAppendRequest(msg *raftpb.Message) *raftpb.AppendRequest {
-	return msg.Message.(*raftpb.Message_AppendRequest).AppendRequest
+func getAppendRequest(msg raftpb.Message) raftpb.AppendRequest {
+	return *msg.Message.(*raftpb.Message_AppendRequest).AppendRequest
 }
 
-func getAppendResponse(msg *raftpb.Message) *raftpb.AppendResponse {
-	return msg.Message.(*raftpb.Message_AppendResponse).AppendResponse
+func getAppendResponse(msg raftpb.Message) raftpb.AppendResponse {
+	return *msg.Message.(*raftpb.Message_AppendResponse).AppendResponse
 }
 
-func getVoteRequest(msg *raftpb.Message) *raftpb.VoteRequest {
-	return msg.Message.(*raftpb.Message_VoteRequest).VoteRequest
+func getVoteRequest(msg raftpb.Message) raftpb.VoteRequest {
+	return *msg.Message.(*raftpb.Message_VoteRequest).VoteRequest
 }
 
-func getVoteResponse(msg *raftpb.Message) *raftpb.VoteResponse {
-	return msg.Message.(*raftpb.Message_VoteResponse).VoteResponse
+func getVoteResponse(msg raftpb.Message) raftpb.VoteResponse {
+	return *msg.Message.(*raftpb.Message_VoteResponse).VoteResponse
 }
 
-func getProposeRequest(msg *raftpb.Message) *raftpb.ProposeRequest {
-	return msg.Message.(*raftpb.Message_ProposeRequest).ProposeRequest
+func getProposeRequest(msg raftpb.Message) raftpb.ProposeRequest {
+	return *msg.Message.(*raftpb.Message_ProposeRequest).ProposeRequest
 }
 
-func buildAppendRequest(term, sender, recipient uint64, req *raftpb.AppendRequest) raftpb.Message {
+func buildAppendRequest(term, from, to uint64, req raftpb.AppendRequest) raftpb.Message {
 	return raftpb.Message{
-		Term:      term,
-		Sender:    sender,
-		Recipient: recipient,
+		From: from,
+		To:   to,
+		Term: term,
 		Message: &raftpb.Message_AppendRequest{
-			AppendRequest: req,
+			AppendRequest: &req,
 		},
 	}
 }
 
-func buildAppendResponse(term, sender, recipient uint64, resp *raftpb.AppendResponse) raftpb.Message {
+func buildAppendResponse(term, from, to uint64, resp raftpb.AppendResponse) raftpb.Message {
 	return raftpb.Message{
-		Term:      term,
-		Sender:    sender,
-		Recipient: recipient,
+		Term: term,
+		From: from,
+		To:   to,
 		Message: &raftpb.Message_AppendResponse{
-			AppendResponse: resp,
+			AppendResponse: &resp,
 		},
 	}
 }
 
-func buildVoteRequest(term, sender, recipient uint64, req *raftpb.VoteRequest) raftpb.Message {
+func buildVoteRequest(term, from, to uint64, req raftpb.VoteRequest) raftpb.Message {
 	return raftpb.Message{
-		Term:      term,
-		Sender:    sender,
-		Recipient: recipient,
+		Term: term,
+		From: from,
+		To:   to,
 		Message: &raftpb.Message_VoteRequest{
-			VoteRequest: req,
+			VoteRequest: &req,
 		},
 	}
 }
 
-func buildVoteResponse(term, sender, recipient uint64, resp *raftpb.VoteResponse) raftpb.Message {
+func buildVoteResponse(term, from, to uint64, resp raftpb.VoteResponse) raftpb.Message {
 	return raftpb.Message{
-		Term:      term,
-		Sender:    sender,
-		Recipient: recipient,
+		Term: term,
+		From: from,
+		To:   to,
 		Message: &raftpb.Message_VoteResponse{
-			VoteResponse: resp,
+			VoteResponse: &resp,
 		},
 	}
 }
 
-func buildProposeRequest(term, sender, recipient uint64, req *raftpb.ProposeRequest) raftpb.Message {
+func buildProposeRequest(term, from, to uint64, req raftpb.ProposeRequest) raftpb.Message {
 	return raftpb.Message{
-		Term:      term,
-		Sender:    sender,
-		Recipient: recipient,
+		Term: term,
+		From: from,
+		To:   to,
 		Message: &raftpb.Message_ProposeRequest{
-			ProposeRequest: req,
+			ProposeRequest: &req,
 		},
 	}
 }

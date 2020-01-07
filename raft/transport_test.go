@@ -69,7 +69,7 @@ func prepareServerState(unixSocketPath string) (*serverState, error) {
 	transport := &transport{
 		raftTransportFacade: fakeRaft,
 		stopChan:            make(chan struct{}),
-		peerClients:         map[uint64]raftpb.RaftService_CommunicateWithPeerClient{},
+		peerClients:         map[uint64]raftpb.Raft_CommunicateClient{},
 	}
 
 	lis, err := net.Listen("unix", unixSocketPath)
@@ -77,7 +77,7 @@ func prepareServerState(unixSocketPath string) (*serverState, error) {
 		return nil, err
 	}
 	grpcServer := grpc.NewServer()
-	raftpb.RegisterRaftServiceServer(grpcServer, transport)
+	raftpb.RegisterRaftServer(grpcServer, transport)
 	go grpcServer.Serve(lis)
 
 	return &serverState{
@@ -94,7 +94,7 @@ func (ss *serverState) stop() {
 
 type clientState struct {
 	conn   *grpc.ClientConn
-	stream raftpb.RaftService_CommunicateWithPeerClient
+	stream raftpb.Raft_CommunicateClient
 }
 
 func prepareClientState(unixSocketPath string) (*clientState, error) {
@@ -105,8 +105,8 @@ func prepareClientState(unixSocketPath string) (*clientState, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := raftpb.NewRaftServiceClient(conn)
-	stream, err := client.CommunicateWithPeer(context.Background())
+	client := raftpb.NewRaftClient(conn)
+	stream, err := client.Communicate(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -140,14 +140,14 @@ func TestCommunicateWithPeer(t *testing.T) {
 	}
 	defer cs.stop()
 
-	msgs := []*raftpb.Message{
-		&raftpb.Message{},
-		&raftpb.Message{},
-		&raftpb.Message{},
+	msgs := []raftpb.Message{
+		raftpb.Message{},
+		raftpb.Message{},
+		raftpb.Message{},
 	}
 	go func() {
 		for _, msg := range msgs {
-			if err := cs.stream.Send(msg); err != nil {
+			if err := cs.stream.Send(&msg); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -156,7 +156,7 @@ func TestCommunicateWithPeer(t *testing.T) {
 	// verifyReceivedMessages verifies that each message in `wantMsgs` was received within `timeout`.
 	verifyReceivedMessages := func(
 		r *fakeRaftTransportFacade,
-		wantMsgs []*raftpb.Message,
+		wantMsgs []raftpb.Message,
 		timeout time.Duration,
 	) bool {
 		for i := 0; i < len(wantMsgs); i++ {
@@ -164,7 +164,7 @@ func TestCommunicateWithPeer(t *testing.T) {
 			case <-time.After(timeout):
 				return false
 			case gotMsg := <-r.recvChan:
-				if !proto.Equal(wantMsgs[i], &gotMsg) {
+				if !proto.Equal(&wantMsgs[i], &gotMsg) {
 					return false
 				}
 			}
@@ -263,8 +263,8 @@ func TestSendLoop(t *testing.T) {
 	complete := verifySentMessages(
 		senderTransport,
 		[]raftpb.Message{
-			raftpb.Message{Recipient: 222},
-			raftpb.Message{Recipient: 333},
+			raftpb.Message{To: 222},
+			raftpb.Message{To: 333},
 		},
 		500*time.Millisecond,
 	)

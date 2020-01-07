@@ -1,0 +1,12 @@
+syntax = "proto2";
+package tempkvpb;
+
+import "github.com/gogo/protobuf/gogoproto/gogo.proto";
+
+option (gogoproto.marshaler_all) = true;
+option (gogoproto.unmarshaler_all) = true;
+
+message KV {
+  optional string k = 1;
+  optional string v = 2;
+}

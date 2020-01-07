@@ -6,6 +6,7 @@ import (
 	"net"
 	"strings"
 
+	"github.com/ulysseses/raft/kvpb"
 	"github.com/ulysseses/raft/raftpb"
 	"google.golang.org/grpc"
 )
@@ -63,7 +64,7 @@ func NewNode(c *Configuration) (*Node, error) {
 	// construct transport
 	transport := &transport{
 		raftTransportFacade: raft,
-		peerClients:         map[uint64]raftpb.RaftService_CommunicateWithPeerClient{},
+		peerClients:         map[uint64]raftpb.Raft_CommunicateClient{},
 		stopChan:            make(chan struct{}),
 	}
 
@@ -88,7 +89,7 @@ func NewNode(c *Configuration) (*Node, error) {
 	}
 
 	grpcServer := grpc.NewServer()
-	raftpb.RegisterRaftServiceServer(grpcServer, transport)
+	raftpb.RegisterRaftServer(grpcServer, transport)
 	go grpcServer.Serve(lis)
 
 	clientConnClosers := []func() error{}
@@ -98,8 +99,8 @@ func NewNode(c *Configuration) (*Node, error) {
 			lis.Close()
 			return nil, err
 		}
-		client := raftpb.NewRaftServiceClient(conn)
-		stream, err := client.CommunicateWithPeer(context.Background())
+		client := raftpb.NewRaftClient(conn)
+		stream, err := client.Communicate(context.Background())
 		if err != nil {
 			lis.Close()
 			return nil, err
@@ -112,7 +113,7 @@ func NewNode(c *Configuration) (*Node, error) {
 	kvStore := &KVStore{
 		raftApplicationFacade: raft,
 		store:                 map[string]string{},
-		proposeChan:           make(chan raftpb.KV),
+		proposeChan:           make(chan kvpb.KV),
 		stopChan:              make(chan struct{}),
 	}
 

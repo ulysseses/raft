@@ -1,8 +1,0 @@
-syntax = "proto3";
-
-package raftpb;
-
-message KV {
-  string k = 1;
-  string v = 2;
-}

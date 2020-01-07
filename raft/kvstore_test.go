@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ulysseses/raft/raftpb"
+	"github.com/ulysseses/raft/kvpb"
 )
 
 // fakeRaftApplicationFacade implements raftApplicationFacade interface.
@@ -52,7 +52,7 @@ func TestPropose(t *testing.T) {
 	kvStore := &KVStore{
 		raftApplicationFacade: fakeRaft,
 		store:                 map[string]string{},
-		proposeChan:           make(chan raftpb.KV),
+		proposeChan:           make(chan kvpb.KV),
 		stopChan:              make(chan struct{}),
 	}
 	go kvStore.loop()
@@ -90,7 +90,7 @@ func TestGet(t *testing.T) {
 	kvStore := &KVStore{
 		raftApplicationFacade: fakeRaft,
 		store:                 map[string]string{},
-		proposeChan:           make(chan raftpb.KV),
+		proposeChan:           make(chan kvpb.KV),
 		stopChan:              make(chan struct{}),
 	}
 	go kvStore.loop()

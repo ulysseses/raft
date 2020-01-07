@@ -8,13 +8,13 @@ import (
 )
 
 type transport struct {
-	raftpb.UnimplementedRaftServiceServer
+	raftpb.UnimplementedRaftServer
 	raftTransportFacade raftTransportFacade
-	peerClients         map[uint64]raftpb.RaftService_CommunicateWithPeerClient
+	peerClients         map[uint64]raftpb.Raft_CommunicateClient
 	stopChan            chan struct{}
 }
 
-func (t *transport) CommunicateWithPeer(stream raftpb.RaftService_CommunicateWithPeerServer) error {
+func (t *transport) CommunicateWithPeer(stream raftpb.Raft_CommunicateServer) error {
 	recvChan := t.raftTransportFacade.recv()
 	for {
 		msg, err := stream.Recv()
@@ -51,7 +51,7 @@ func (t *transport) sendLoop() {
 		case <-t.stopChan:
 			return
 		case msg := <-sendChan:
-			client, ok := t.peerClients[msg.Recipient]
+			client, ok := t.peerClients[msg.To]
 			if !ok {
 				panic(fmt.Sprintf("msg: %s", msg.String()))
 			}

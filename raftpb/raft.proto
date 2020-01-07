@@ -1,51 +1,55 @@
-syntax = "proto3";
-
+syntax = "proto2";
 package raftpb;
 
+import "github.com/gogo/protobuf/gogoproto/gogo.proto";
+
+option (gogoproto.marshaler_all) = true;
+option (gogoproto.unmarshaler_all) = true;
+
 message Entry {
-  uint64 term = 1;
-  uint64 index = 2;
-  bytes data = 3;
-}
-
-message AppendRequest {
-  uint64 prev_index = 1;
-  uint64 prev_term = 2;
-  repeated Entry entries = 3;
-  uint64 committed = 4;
-}
-
-message AppendResponse {
-  bool success = 1;
-  uint64 index = 2;
-}
-
-message VoteRequest {
-  uint64 index = 1;
-}
-
-message VoteResponse {
-  bool granted = 1;
+  optional uint64 index = 1  [(gogoproto.nullable) = false];
+  optional uint64 term  = 2  [(gogoproto.nullable) = false];
+  optional bytes  data  = 3  [(gogoproto.nullable) = false];
 }
 
 message Message {
-  uint64 term = 1;
-  uint64 sender = 2;
-  uint64 recipient = 3;
+  optional uint64      term = 1  [(gogoproto.nullable) = false];
+  optional uint64      from = 2  [(gogoproto.nullable) = false];
+  optional uint64      to   = 3  [(gogoproto.nullable) = false];
   oneof message {
-    AppendRequest append_request = 4;
+    AppendRequest  append_request  = 4;
     AppendResponse append_response = 5;
-    VoteRequest vote_request = 6;
-    VoteResponse vote_response = 7;
+    VoteRequest    vote_request    = 6;
+    VoteResponse   vote_response   = 7;
     ProposeRequest propose_request = 8;
   }
 }
 
-service RaftService {
-  rpc CommunicateWithPeer(stream Message) returns (stream Message) {}
+message AppendRequest {
+  optional uint64 prev_index = 1  [(gogoproto.nullable) = false];
+  optional uint64 prev_term  = 2  [(gogoproto.nullable) = false];
+  optional uint64 committed  = 3  [(gogoproto.nullable) = false];
+  repeated Entry entries     = 4  [(gogoproto.nullable) = false];
+}
+
+message AppendResponse {
+  optional bool success = 1  [(gogoproto.nullable) = false];
+  optional uint64 index = 2  [(gogoproto.nullable) = false];
+}
+
+message VoteRequest {
+  optional uint64 index = 1  [(gogoproto.nullable) = false];
+}
+
+message VoteResponse {
+  optional bool granted = 1  [(gogoproto.nullable) = false];
 }
 
 // extensions
 message ProposeRequest {
-  bytes data = 1;
+  optional bytes data = 1  [(gogoproto.nullable) = false];
+}
+
+service Raft {
+  rpc Communicate(stream Message) returns (stream Message) {}
 }

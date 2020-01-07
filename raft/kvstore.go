@@ -3,48 +3,47 @@ package raft
 import (
 	"sync"
 
-	"github.com/gogo/protobuf/proto"
-	"github.com/ulysseses/raft/raftpb"
+	"github.com/ulysseses/raft/kvpb"
 )
 
 // KVStore is an in-memory key-value store that is attached to a raft node.
 type KVStore struct {
+	sync.RWMutex
+
 	raftApplicationFacade raftApplicationFacade
 	store                 map[string]string
 
-	mu sync.RWMutex
-
-	proposeChan chan raftpb.KV
+	proposeChan chan kvpb.KV
 	stopChan    chan struct{}
 }
 
 // Get gets the value for a key
 func (s *KVStore) Get(k string) (string, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.RLock()
 	v, ok := s.store[k]
+	s.RUnlock()
 	return v, ok
 }
 
 // Propose acts like an asynchronous set operation
 func (s *KVStore) Propose(k, v string) {
-	s.proposeChan <- raftpb.KV{K: k, V: v}
+	s.proposeChan <- kvpb.KV{K: k, V: v}
 }
 
 func (s *KVStore) loop() {
 	for {
 		select {
 		case data := <-s.raftApplicationFacade.apply():
-			var kv raftpb.KV
-			if err := proto.Unmarshal(data, &kv); err != nil {
+			var kv kvpb.KV
+			if err := kv.Unmarshal(data); err != nil {
 				panic(err)
 			}
-			s.mu.Lock()
-			s.store[kv.K] = kv.V
-			s.mu.Unlock()
+			s.Lock()
+			s.store[string(kv.K)] = string(kv.V)
+			s.Unlock()
 			s.raftApplicationFacade.applyAck() <- struct{}{}
 		case kv := <-s.proposeChan:
-			data, err := proto.Marshal(&kv)
+			data, err := kv.Marshal()
 			if err != nil {
 				panic(err)
 			}
