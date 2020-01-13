@@ -1,5 +1,5 @@
 syntax = "proto2";
-package tempkvpb;
+package kvpb;
 
 import "github.com/gogo/protobuf/gogoproto/gogo.proto";
 

@@ -2,693 +2,699 @@ package raft
 
 import (
 	"fmt"
-	"math/rand"
+	"log"
 	"sort"
-	"time"
 
 	"github.com/ulysseses/raft/raftpb"
 )
 
-type role int32
-
-const (
-	roleFollower role = iota
-	roleCandidate
-	roleLeader
+var (
+	// ErrDroppedProposal is the error emitted when a proposal got dropped.
+	ErrDroppedProposal = fmt.Errorf("dropped proposal")
+	// ErrNotLeader is the error emitted when trying to propose to a non-leader.
+	ErrNotLeader = fmt.Errorf("not leader")
+	// ErrDroppedRead is emitted if the node serving the read has stepped down
+	// from leader to follower.
+	ErrDroppedRead = fmt.Errorf("dropped read request")
 )
 
-type raft struct {
-	// buffered and owned by transport
-	recvChan chan raftpb.Message
-	// buffered and owned by transport
-	sendChan chan raftpb.Message
+type raftStateMachine struct {
+	// ticker
+	heartbeatTicker Ticker
+	electionTicker  Ticker
+	heartbeatC      <-chan struct{}
 
-	// unbuffered
-	applyChan chan []byte
-	// unbuffered
-	applyAckChan chan struct{}
+	// network io
+	recvChan <-chan raftpb.Message
+	sendChan chan<- raftpb.Message
 
-	leader uint64
-	// unbuffered
-	proposeChan chan []byte
+	// proposals
+	pendingProposal pendingProposal
+	propReqChan     chan proposalRequest
+	propRespChan    chan proposalResponse
 
-	peers                   []uint64
-	minElectionTimeoutTicks int
-	maxElectionTimeoutTicks int
-	heartbeatTicks          int
-	tickMs                  int
-	electionTimeoutTimer    *timer
-	heartbeatTimer          *timer
+	// reads
+	pendingRead  pendingRead
+	readReqChan  chan readRequest
+	readRespChan chan readResponse
 
-	// initialized to roleFollower
-	role role
-	// initialized to lastIndex + 1
-	nextIndex map[uint64]uint64
-	// initialized to 0
-	matchIndex map[uint64]uint64
+	// applies
+	commitChan chan uint64
 
-	id uint64
-	// initially contains a dummy entry of index 1 and term 1
-	log []raftpb.Entry
-	// initially at 1 (for the dummy entry)
-	startIndex uint64
-	// starts off at 1
-	term    uint64
-	applied uint64
-	// starts off at 1
-	committed uint64
+	// state requests
+	stateReqChan  chan stateReq
+	stateRespChan chan raftpb.State
 
-	votes      map[uint64]bool
-	votedFor   uint64
-	quorumSize int
+	// raft state
+	id             uint64
+	consistency    Consistency
+	state          raftpb.State
+	quorumSize     int
+	lastEntryIndex uint64
+	lastEntryTerm  uint64
+	peers          map[uint64]*peer
 
-	stop chan struct{}
-
-	// send-once channel indicating initial leader elected
-	initialLeaderElectedSignalChan chan struct{}
-	initialLeaderElected           bool
+	log                    *raftLog
+	quorumMatchIndexBuffer []uint64
+	stopChan               chan struct{}
 }
 
-func newRaft(c *Configuration) raftFacade {
-	r := &raft{}
-	if c.RecvChanSize > 0 {
-		r.recvChan = make(chan raftpb.Message, c.RecvChanSize)
-	} else {
-		r.recvChan = make(chan raftpb.Message)
-	}
-
-	if c.SendChanSize > 0 {
-		r.sendChan = make(chan raftpb.Message, c.SendChanSize)
-	} else {
-		r.sendChan = make(chan raftpb.Message)
-	}
-
-	r.applyChan = make(chan []byte)
-	r.applyAckChan = make(chan struct{})
-
-	if c.ProposeChanSize > 0 {
-		r.proposeChan = make(chan []byte, c.ProposeChanSize)
-	} else {
-		r.proposeChan = make(chan []byte)
-	}
-
-	for peer := range c.Peers {
-		r.peers = append(r.peers, peer)
-	}
-	r.minElectionTimeoutTicks = c.MinElectionTimeoutTicks
-	r.maxElectionTimeoutTicks = c.MaxElectionTimeoutTicks
-	r.heartbeatTicks = c.HeartbeatTicks
-	r.tickMs = c.TickMs
-	electionTimeoutTicks := rand.Intn(r.maxElectionTimeoutTicks-r.minElectionTimeoutTicks) +
-		r.minElectionTimeoutTicks
-	electionTimeoutMs := time.Duration(electionTimeoutTicks*r.tickMs) * time.Millisecond
-
-	// Initialize timers but don't start them
-	// They will start when loop starts.
-	r.electionTimeoutTimer = newTimer(electionTimeoutMs)
-	r.electionTimeoutTimer.Stop()
-	r.heartbeatTimer = newTimer(time.Duration(r.heartbeatTicks*r.tickMs) * time.Millisecond)
-	r.heartbeatTimer.Stop()
-
-	r.role = roleFollower
-	r.nextIndex = map[uint64]uint64{}
-	r.matchIndex = map[uint64]uint64{}
-	for _, peer := range r.peers {
-		r.nextIndex[peer] = 2
-		r.matchIndex[peer] = 1
-	}
-
-	r.id = c.ID
-	r.log = []raftpb.Entry{{Term: 1, Index: 1, Data: []byte{}}}
-	r.startIndex = 1
-	r.term = 1
-	r.applied = 1
-	r.committed = 1
-	r.quorumSize = (len(r.peers) / 2) + 1
-	r.stop = make(chan struct{})
-	r.initialLeaderElectedSignalChan = make(chan struct{})
-	return r
-}
-
-// Rules for Servers
-//
-// All Servers:
-//   * If commitIndex > lastApplied: increment lastApplied, apply
-//     log[lastApplied] to state machine (3.5)
-//   * If RPC request or response contains term T > currentTerm:
-//     set currentTerm = T, convert to follower (3.3)
-// Followers:
-//   * Respond to RPCs from candidates and leaders
-//   * If election timeout elapses without receiving AppendEntries
-//     RPC from current leader or granting vote to candidate:
-//     convert to candidate
-// Candidates:
-//   * On conversion to candidate, start election:
-//     - Increment currentTerm
-//     - Vote for self
-//     - Reset election timer
-//     - Send RequestVote RPCs to all other servers
-//   * If votes received from majority of servers: become leader
-//   * If AppendEntries RPC received from new leader: convert to
-//     follower
-//   * If election timeout elapses, start new election
-// Leaders:
-//   * Upon election: send initial empty AppendEntries RPC
-//     (heartbeat) to each server; repeat during idle periods to
-//     prevent election timeouts (3.4)
-//   * If command received from client: append entry to local log,
-//     respond after entry applied to state machine (3.5)
-//   * If last log index >= nextIndex for a follower, send
-//     AppendEntries RPC with log entries starting at nextIndex
-//     - If successful: update nextIndex and matchIndex for
-//       follower (3.5)
-//     - If AppendEntries fails because of log inconsistency:
-//       decrement nextIndex and retry (3.5)
-//   * If there exists an N such that N > commitIndex, a majority
-//     of matchIndex[i] >= N, and log[N].term == currentTerm:
-//     set commitIndex = N (3.5, 3.6)
-// RequestVote RPC:
-// Receiver Implementation:
-//   1. Reply false if term < currentTerm (3.3)
-//   2. If votedFor is null or candidateId, and candidate's log is at
-//      least as up-to-date as receiver's log, grant vote (3.4, 3.6)
-// AppendEntries RPC:
-// Receiver Implementation:
-//   1. Reply false if term < currentTerm (3.3)
-//   2. Reply false if log doesn't contain an entry at prevLogIndex
-//      whose term matches prevLogTerm (3.5)
-//   3. If an existing entry conflicts with a new one (same index
-//      but different terms), delete the existing entry and all that
-//      follow it (3.5)
-//   4. Append any new entries not already in the log
-//   5. If leaderCommit > commitIndex, set commitIndex =
-//      min(leaderCommit, index of last new entry)
-func (r *raft) loop() {
-	r.resetElectionTimeout()
-	defer r.electionTimeoutTimer.Stop()
-	defer r.heartbeatTimer.Stop()
-	var (
-		recvChan                       <-chan raftpb.Message = r.recvChan
-		sendChan                       chan<- raftpb.Message = r.sendChan
-		applyChan                      chan<- []byte             = r.applyChan
-		applyAckChan                   <-chan struct{}           = r.applyAckChan
-		stop                           <-chan struct{}           = r.stop
-		initialLeaderElectedSignalChan chan<- struct{}           = r.initialLeaderElectedSignalChan
-
-		dataToApply []byte = nil
-	)
+func (r *raftStateMachine) run() error {
+	electionTickerC := r.electionTicker.C()
 	for {
-		// All Servers:
-		//   * If commitIndex > lastApplied: increment lastApplied, apply
-		//     log[lastApplied] to state machine (3.5)  [PART 1]
-		if dataToApply == nil && r.committed > r.applied {
-			dataToApply = append([]byte{}, r.log[r.applied-r.startIndex+1].Data...)
-		}
-		if dataToApply != nil {
-			select {
-			case applyChan <- dataToApply:
-			default:
-			}
-		}
-
 		select {
-		case <-stop:
-			return
-		case proposedData := <-r.proposeChan:
-			// Leaders:
-			//   * If command received from client: append entry to local log,
-			//     respond after entry applied to state machine (3.5)
-			if r.role == roleLeader {
-				entry := raftpb.Entry{
-					Term:  r.term,
-					Index: r.startIndex + uint64(len(r.log)),
-					Data:  proposedData,
+		case <-r.stopChan:
+			return nil
+		case <-r.heartbeatC: // heartbeatC is null when not leader
+			r.broadcastApp()
+		case <-electionTickerC:
+			if r.state.Role == raftpb.RoleLeader {
+				// Step down to follower role if could not establish quorum
+				if !r.hasQuorumAcks() {
+					r.becomeFollower()
 				}
-				r.log = append(r.log, entry)
-				// shortcut
-				if r.quorumSize == 1 {
-					r.committed++
-				}
-			} else if r.role == roleFollower {
-				innerReq := raftpb.ProposeRequest{
-					Data: proposedData,
-				}
-				if r.leader != 0 {
-					// send proposal to leader, may fail in transport
-					// TODO: maybe implement req/resp to prevent dropped proposals?
-					req := buildProposeRequest(
-						r.term, r.id, r.leader,
-						innerReq)
-					sendChan <- req
+				// Reset acks
+				for _, p := range r.peers {
+					p.ack = false
 				}
 			} else {
-				// drop the proposal since there is no leader
-				// TODO: maybe buffer the proposal until a leader exists?
-				fmt.Printf("dropped proposal on candidate id = %d\n", r.id)
+				r.becomeCandidate()
 			}
-		case <-r.heartbeatTimer.C:
-			// Leaders:
-			//   * Upon election: send initial empty AppendEntries RPC
-			//     (heartbeat) to each server; repeat during idle periods to
-			//     prevent election timeouts (3.4)
-			//   * If last log index >= nextIndex for a follower, send
-			//     AppendEntries RPC with log entries starting at nextIndex
-			if r.role != roleLeader {
-				continue
+		case msg := <-r.recvChan:
+			if err := r.processMessage(msg); err != nil {
+				return err
 			}
-			r.resetHeartbeatTimeout()
-			if r.quorumSize == 1 {
-				r.committed = r.startIndex + uint64(len(r.log)) - 1
-				continue
-			}
-			for _, peerID := range r.peers {
-				if peerID == r.id {
-					continue
-				}
-				nextIndex := r.nextIndex[peerID]
-				entries := append([]raftpb.Entry{}, r.log[nextIndex-r.startIndex:]...)
-				innerReq := raftpb.AppendRequest{
-					PrevIndex: nextIndex - 1,
-					PrevTerm:  r.log[nextIndex-1-r.startIndex].Term,
-					Entries:   entries,
-					Committed: r.committed,
-				}
-				req := buildAppendRequest(
-					r.term, r.id, peerID,
-					innerReq)
-				sendChan <- req
-			}
-		case <-r.electionTimeoutTimer.C:
-			// Followers:
-			//   * If election timeout elapses without receiving AppendEntries
-			//     RPC from current leader or granting vote to candidate:
-			//     convert to candidate
-			// Candidates:
-			//   * If election timeout elapses, start new election
-			// Candidates:
-			//   * On conversion to candidate, start election:
-			//     - Increment currentTerm
-			//     - Vote for self
-			//     - Reset election timer
-			//     - Send RequestVote RPCs to all other servers
-			r.resetElectionTimeout()
-			r.becomeCandidate()
-		case <-applyAckChan:
-			// All Servers:
-			//   * If commitIndex > lastApplied: increment lastApplied, apply
-			//     log[lastApplied] to state machine (3.5)  [PART 2]
-			if dataToApply == nil {
-				panic("got apply ack but wasn't expecting one")
-			}
-			r.applied++
-			dataToApply = nil
-		case msg := <-recvChan:
-			// All Servers:
-			//   * If RPC request or response contains term T > currentTerm:
-			//     set currentTerm = T, convert to follower (3.3)
-			if msg.Term > r.term {
-				r.term = msg.Term
-				r.becomeFollower()
-			} else if msg.Term < r.term {
-				continue
-			}
-
-			if r.role == roleCandidate {
-				// Candidates:
-				//   * If votes received from majority of servers: become leader
-				//   * If AppendEntries RPC received from new leader: convert to
-				//     follower
-				switch msg.Message.(type) {
-				case *raftpb.Message_VoteResponse:
-					resp := getVoteResponse(msg)
-					if resp.Granted {
-						r.votes[msg.From] = true
-					}
-					voteCount := 0
-					for _, granted := range r.votes {
-						if granted {
-							voteCount++
-						}
-					}
-					if voteCount >= r.quorumSize {
-						// Leaders:
-						//   * Upon election: send initial empty AppendEntries RPC
-						//     (heartbeat) to each server; repeat during idle periods to
-						//     prevent election timeouts (3.4)
-						r.becomeLeader()
-					}
-				case *raftpb.Message_AppendRequest:
-					r.becomeFollower()
-				default:
-
-				}
-			}
-
-			if r.role == roleFollower {
-				// Followers:
-				//   * Respond to RPCs from candidates and leaders
-				switch msg.Message.(type) {
-				case *raftpb.Message_VoteRequest:
-					// RequestVote RPC:
-					// Receiver Implementation:
-					//   1. Reply false if term < currentTerm (3.3)
-					//   2. If votedFor is null or candidateId, and candidate's log is at
-					//      least as up-to-date as receiver's log, grant vote (3.4, 3.6)
-					if _, ok := msg.Message.(*raftpb.Message_VoteRequest); ok {
-						req := getVoteRequest(msg)
-						if msg.Term >= r.term &&
-							(r.votedFor == 0 || r.votedFor == msg.From) &&
-							(msg.Term > r.term || req.Index >= r.log[len(r.log)-1].Index) {
-							r.votedFor = msg.From
-						}
-						resp := buildVoteResponse(
-							r.term, r.id, msg.From,
-							raftpb.VoteResponse{Granted: r.votedFor == msg.From})
-						sendChan <- resp
-					}
-				case *raftpb.Message_AppendRequest:
-					// AppendEntries RPC:
-					// Receiver Implementation:
-					r.registerLeader(msg.From)
-					req := getAppendRequest(msg)
-
-					//   1. Reply false if term < currentTerm (3.3)
-					//   2. Reply false if log doesn't contain an entry at prevLogIndex
-					//      whose term matches prevLogTerm (3.5)
-					if msg.Term >= r.term && req.PrevIndex < r.startIndex {
-						panic(fmt.Sprintf(
-							"got prev_index = %d, but startIndex = %d... msg:\n%s",
-							req.PrevIndex, r.startIndex, msg.String()))
-					}
-
-					success := msg.Term >= r.term &&
-						req.PrevIndex <= r.startIndex+uint64(len(r.log)-1) &&
-						req.PrevTerm == r.log[req.PrevIndex-r.startIndex].Term
-
-					//   3. If an existing entry conflicts with a new one (same index
-					//      but different terms), delete the existing entry and all that
-					//      follow it (3.5)
-					//   4. Append any new entries not already in the log
-					if success {
-						lastI := req.PrevIndex - r.startIndex
-						r.log = append(r.log[:lastI+1], req.Entries...)
-					}
-
-					//   5. If leaderCommit > commitIndex, set commitIndex =
-					//      min(leaderCommit, index of last new entry)
-					if req.Committed > r.committed {
-						lastIndex := r.log[len(r.log)-1].Index
-						if req.Committed < lastIndex {
-							r.committed = req.Committed
-						} else {
-							r.committed = lastIndex
-						}
-					}
-
-					resp := buildAppendResponse(
-						r.term, r.id, msg.To,
-						raftpb.AppendResponse{
-							Success: success,
-							Index:   r.log[len(r.log)-1].Index,
-						},
-					)
-					sendChan <- resp
-					r.leader = msg.From
-					if !r.initialLeaderElected {
-						close(initialLeaderElectedSignalChan)
-						r.initialLeaderElected = true
-					}
-				default:
-
-				}
-			}
-
-			if r.role == roleLeader {
-				// Leaders:
-				//     - If successful: update nextIndex and matchIndex for
-				//       follower (3.5)
-				//     - If AppendEntries fails because of log inconsistency:
-				//       decrement nextIndex and retry (3.5)
-				switch msg.Message.(type) {
-				case *raftpb.Message_AppendResponse:
-					resp := getAppendResponse(msg)
-					if resp.Success {
-						r.nextIndex[msg.From] = resp.Index + 1
-						r.matchIndex[msg.From] = resp.Index
-					} else {
-						r.nextIndex[msg.From]--
-					}
-
-					// Leaders:
-					//   * If there exists an N such that N > commitIndex, a majority
-					//     of matchIndex[i] >= N, and log[N].term == currentTerm:
-					//     set commitIndex = N (3.5, 3.6)
-					type kv struct{ k, v uint64 }
-					kvs := []kv{}
-					for k, v := range r.matchIndex {
-						kvs = append(kvs, kv{k, v})
-					}
-					sort.Slice(kvs, func(i, j int) bool {
-						return kvs[i].v < kvs[j].v
-					})
-					n := kvs[len(kvs)-r.quorumSize].v
-					if r.log[n-r.startIndex].Term == r.term {
-						r.committed = n
-					}
-				case *raftpb.Message_ProposeRequest:
-					req := getProposeRequest(msg)
-					entry := raftpb.Entry{
-						Term:  r.term,
-						Index: r.log[len(r.log)-1].Index + 1,
-						Data:  req.Data,
-					}
-					r.log = append(r.log, entry)
-				default:
-
-				}
-			}
+		case propReq := <-r.propReqChan:
+			r.propose(propReq)
+		case readReq := <-r.readReqChan:
+			r.read(readReq)
+		case _ = <-r.stateReqChan:
+			r.stateRespChan <- r.state
 		}
 	}
 }
 
-func (r *raft) resetHeartbeatTimeout() {
-	r.heartbeatTimer.Reset(time.Duration(r.heartbeatTicks*r.tickMs) * time.Millisecond)
-}
-
-func (r *raft) resetElectionTimeout() {
-	electionTimeoutTicks := rand.Intn(r.maxElectionTimeoutTicks-r.minElectionTimeoutTicks) + r.minElectionTimeoutTicks
-	electionTimeoutMs := time.Duration(electionTimeoutTicks*r.tickMs) * time.Millisecond
-	r.electionTimeoutTimer.Reset(electionTimeoutMs)
-}
-
-func (r *raft) becomeLeader() {
-	r.electionTimeoutTimer.Stop()
-	r.resetHeartbeatTimeout()
-	r.role = roleLeader
-	r.leader = r.id
-	r.votes = map[uint64]bool{}
-	r.votedFor = 0
-	r.matchIndex[r.id] = r.startIndex + uint64(len(r.log)) - 1
-	r.nextIndex[r.id] = r.matchIndex[r.id] + 1
-	if !r.initialLeaderElected {
-		close(r.initialLeaderElectedSignalChan)
-		r.initialLeaderElected = true
-	}
-
-	for _, peerID := range r.peers {
-		if peerID == r.id {
+func (r *raftStateMachine) hasQuorumAcks() bool {
+	acks := 0
+	for _, p := range r.peers {
+		if p.id == r.id {
+			acks++
 			continue
 		}
-		innerReq := raftpb.AppendRequest{
-			PrevIndex: r.nextIndex[peerID] - 1,
-			PrevTerm:  r.log[r.nextIndex[peerID]-1-r.startIndex].Term,
-			Committed: r.committed,
+		if p.ack {
+			acks++
 		}
-		req := buildAppendRequest(
-			r.term, r.id, peerID,
-			innerReq)
-		r.sendChan <- req
+	}
+	return acks >= r.quorumSize
+}
+
+func (r *raftStateMachine) processMessage(msg raftpb.Message) error {
+	if msg.Term < r.state.Term {
+		return nil
+	}
+	if msg.Term > r.state.Term {
+		r.state.Term = msg.Term
+		r.becomeFollower()
+
+		// proposal may already have been committed, but just in case it wasn't...
+		if r.pendingProposal.isPending() {
+			r.endPendingProposal(ErrDroppedProposal)
+		}
+		// cancel any pending read requests
+		if r.pendingProposal.isPending() {
+			r.endPendingRead(ErrDroppedRead)
+		}
+	}
+
+	switch msg.Type {
+	case raftpb.MsgApp:
+		msgApp := getApp(msg)
+		r.processApp(msgApp)
+	case raftpb.MsgAppResp:
+		msgAppResp := getAppResp(msg)
+		r.processAppResp(msgAppResp)
+	case raftpb.MsgPing:
+		msgPing := getPing(msg)
+		r.processPing(msgPing)
+	case raftpb.MsgPong:
+		msgPong := getPong(msg)
+		r.processPong(msgPong)
+	case raftpb.MsgProp:
+		msgProp := getProp(msg)
+		r.processProp(msgProp)
+	case raftpb.MsgPropResp:
+		msgPropResp := getPropResp(msg)
+		r.processPropResp(msgPropResp)
+	case raftpb.MsgVote:
+		msgVote := getVote(msg)
+		r.processVote(msgVote)
+	case raftpb.MsgVoteResp:
+		msgVoteResp := getVoteResp(msg)
+		r.processVoteResp(msgVoteResp)
+	default:
+		return fmt.Errorf("unrecognized msg type: %s", msg.Type.String())
+	}
+
+	return nil
+}
+
+func (r *raftStateMachine) processApp(msg msgApp) {
+	r.state.Leader = msg.from
+	switch r.state.Role {
+	case raftpb.RoleLeader:
+		r.becomeFollower()
+	case raftpb.RoleCandidate:
+		r.becomeFollower()
+	}
+	r.electionTicker.Reset()
+
+	var largestMatchIndex uint64 = 0
+	localPrevTerm := r.log.entry(msg.index).Term
+	success := msg.term >= r.state.Term &&
+		msg.index <= r.lastEntryIndex &&
+		msg.logTerm == localPrevTerm
+	if success {
+		r.lastEntryIndex = r.log.append(msg.index, msg.entries...)
+		largestMatchIndex = r.lastEntryIndex
+		r.lastEntryTerm = msg.entries[len(msg.entries)-1].Term
+
+		newCommit := msg.commit
+		if newCommit >= r.lastEntryIndex {
+			newCommit = r.lastEntryIndex
+		}
+		r.updateCommit(newCommit)
+	}
+
+	resp := buildAppResp(r.state.Term, r.id, msg.to, largestMatchIndex)
+	select {
+	case r.sendChan <- resp:
+	default:
 	}
 }
 
-func (r *raft) becomeCandidate() {
-	r.role = roleCandidate
-	r.leader = 0
-	r.term++
-	r.votedFor = r.id
-	r.votes = map[uint64]bool{r.id: true}
+func (r *raftStateMachine) processPing(msg msgPing) {
+	if msg.from == r.state.Leader {
+		switch r.state.Role {
+		case raftpb.RoleFollower:
+			r.electionTicker.Reset()
+		case raftpb.RoleCandidate:
+			r.becomeFollower()
+		default:
+		}
+	}
 
-	// shortcut
-	if r.quorumSize == 1 {
+	pong := buildPong(r.state.Term, r.id, msg.from, msg.unixNano, msg.index)
+	select {
+	case r.sendChan <- pong:
+	default:
+	}
+}
+
+func (r *raftStateMachine) processAppResp(msg msgAppResp) {
+	switch r.state.Role {
+	case raftpb.RoleFollower:
+		return
+	case raftpb.RoleCandidate:
+		return
+	}
+
+	p := r.peers[msg.from]
+
+	p.ack = true
+
+	// Update match/next index
+	success := msg.index != 0
+	if success {
+		if msg.index > p.match {
+			p.match = msg.index
+		}
+		p.next = r.lastEntryIndex + 1
+	} else {
+		p.next--
+	}
+
+	quorumMatchIndex := r.quorumMatchIndex()
+	if r.log.entry(quorumMatchIndex).Term == r.state.Term && quorumMatchIndex > r.state.Commit {
+		r.updateCommit(quorumMatchIndex)
+	}
+
+	if r.canAckLinearizableProposal() {
+		r.endPendingProposal(nil)
+	}
+
+	if r.canAckLinearizableRead() {
+		r.endPendingRead(nil)
+	}
+}
+
+func (r *raftStateMachine) processPong(msg msgPong) {
+	if r.state.Role != raftpb.RoleLeader {
+		return
+	}
+
+	r.peers[msg.from].ack = true
+
+	if r.pendingRead.isPending() && msg.unixNano == r.pendingRead.unixNano && msg.index == r.pendingRead.index {
+		r.pendingRead.acks++
+	}
+
+	if r.canAckLinearizableRead() {
+		r.endPendingRead(nil)
+	}
+}
+
+func (r *raftStateMachine) processProp(msg msgProp) {
+	// fail the proposal if not leader
+	if r.state.Role != raftpb.RoleLeader {
+		resp := buildPropResp(
+			r.state.Term, r.id, msg.from,
+			msg.unixNano, 0, 0)
+		select {
+		case r.sendChan <- resp:
+		default:
+		}
+		return
+	}
+
+	entry := raftpb.Entry{
+		Index: r.lastEntryIndex + 1,
+		Term:  r.state.Term,
+		Data:  msg.data,
+	}
+	r.lastEntryIndex = r.log.append(r.lastEntryIndex, entry)
+
+	resp := buildPropResp(
+		r.state.Term, r.id, msg.from,
+		msg.unixNano, entry.Index, entry.Term)
+	select {
+	case r.sendChan <- resp:
+	default:
+	}
+}
+
+func (r *raftStateMachine) processPropResp(msg msgPropResp) {
+	if !r.pendingProposal.isPending() {
+		return
+	}
+
+	if msg.unixNano == r.pendingProposal.unixNano && msg.index != 0 {
+		// serializable shortcut
+		if r.consistency == ConsistencySerializable {
+			r.endPendingProposal(nil)
+		}
+	} else {
+		r.endPendingProposal(ErrNotLeader)
+	}
+}
+
+func (r *raftStateMachine) processVote(msg msgVote) {
+	switch r.state.Role {
+	case raftpb.RoleLeader:
+		return
+	case raftpb.RoleCandidate:
+		return
+	}
+	grantVote := msg.term >= r.state.Term &&
+		(r.state.VotedFor == 0 || r.state.VotedFor == msg.from) &&
+		(msg.term > r.state.Term || msg.index >= r.lastEntryIndex)
+	if grantVote {
+		r.state.VotedFor = msg.from
+		resp := buildVoteResp(r.state.Term, r.id, msg.from)
+		select {
+		case r.sendChan <- resp:
+		default:
+		}
+	}
+}
+
+func (r *raftStateMachine) processVoteResp(msg msgVoteResp) {
+	r.peers[msg.from].voteGranted = true
+	voteCount := 0
+	for _, p := range r.peers {
+		if p.voteGranted {
+			voteCount++
+		}
+	}
+	if voteCount >= r.quorumSize {
 		r.becomeLeader()
 	}
+}
 
-	for _, peerID := range r.peers {
-		if peerID == r.id {
+func (r *raftStateMachine) propose(req proposalRequest) {
+	// if not leader, then proxy proposal request to leader
+	if r.id != r.state.Leader {
+		r.pendingProposal = pendingProposal{unixNano: req.unixNano}
+		prop := buildProp(
+			r.state.Term, r.id, r.state.Leader,
+			req.unixNano, req.data)
+		select {
+		case r.sendChan <- prop:
+		default:
+			r.pendingProposal = pendingProposal{}
+			r.endPendingProposal(ErrDroppedProposal)
+		}
+		return
+	}
+
+	entry := raftpb.Entry{
+		Index: r.lastEntryIndex + 1,
+		Term:  r.state.Term,
+		Data:  req.data,
+	}
+	r.pendingProposal = pendingProposal{
+		index:    entry.Index,
+		term:     entry.Term,
+		unixNano: req.unixNano,
+	}
+	r.lastEntryIndex = r.log.append(r.lastEntryIndex, entry)
+	// serializable shortcut
+	if r.consistency == ConsistencySerializable {
+		r.endPendingProposal(nil)
+	}
+}
+
+func (r *raftStateMachine) read(req readRequest) {
+	r.pendingRead = pendingRead{
+		index:    r.state.Commit,
+		unixNano: req.unixNano,
+		acks:     1,
+	}
+
+	// serializable shortcut
+	if r.consistency == ConsistencySerializable {
+		r.endPendingRead(nil)
+		return
+	}
+
+	r.broadcastPing()
+}
+
+func (r *raftStateMachine) getState() raftpb.State {
+	r.stateReqChan <- stateReq{}
+	return <-r.stateRespChan
+}
+
+func (r *raftStateMachine) becomeCandidate() {
+	var sendChan chan<- raftpb.Message = r.sendChan
+	r.state.Role = raftpb.RoleCandidate
+	r.state.Leader = 0
+	r.state.Term++
+	r.endPendingProposal(ErrDroppedProposal)
+	r.endPendingRead(ErrDroppedRead)
+	r.state.VotedFor = r.id
+	for _, p := range r.peers {
+		p.voteGranted = false
+	}
+
+	lastEntry := r.log.entry(r.lastEntryIndex)
+	for peerID := range r.peers {
+		if r.id == peerID {
 			continue
 		}
-		innerReq := raftpb.VoteRequest{
-			Index: r.startIndex + uint64(len(r.log)) - 1,
+		req := buildVote(r.state.Term, r.id, peerID, lastEntry.Index, lastEntry.Term)
+		select {
+		case sendChan <- req:
+		default:
 		}
-		req := buildVoteRequest(
-			r.term, r.id, peerID,
-			innerReq)
-		r.sendChan <- req
 	}
 }
 
-func (r *raft) becomeFollower() {
-	r.role = roleFollower
-	r.leader = 0
-	r.votedFor = 0
-	if len(r.peers) > 1 {
-		r.votes = map[uint64]bool{}
+func (r *raftStateMachine) becomeFollower() {
+	r.state.Role = raftpb.RoleFollower
+	r.state.VotedFor = 0
+	for _, p := range r.peers {
+		p.voteGranted = false
+	}
+	r.endPendingProposal(ErrDroppedProposal)
+	r.endPendingRead(ErrDroppedRead)
+}
+
+func (r *raftStateMachine) becomeLeader() {
+	r.state.Role = raftpb.RoleLeader
+	r.state.Leader = r.id
+	r.state.VotedFor = 0
+	for _, p := range r.peers {
+		p.voteGranted = false
+	}
+
+	for _, p := range r.peers {
+		p.next = r.lastEntryIndex + 1
+		p.ack = false
+	}
+
+	// Try to commit an (empty) entry from the newly elected term
+	r.lastEntryIndex = r.log.append(r.lastEntryIndex, raftpb.Entry{
+		Index: r.lastEntryIndex + 1,
+		Term:  r.state.Term,
+	})
+	r.lastEntryTerm = r.state.Term
+	r.broadcastApp()
+	r.heartbeatTicker.Reset()
+	r.heartbeatC = r.heartbeatTicker.C()
+}
+
+func (r *raftStateMachine) broadcastApp() {
+	for _, p := range r.peers {
+		if r.id == p.id {
+			continue
+		}
+		entries := []raftpb.Entry{}
+		if p.next <= r.lastEntryIndex {
+			r.log.RLock()
+			entries = append(entries, r.log.entries(p.next, r.lastEntryIndex)...)
+			r.log.RUnlock()
+		}
+		prevEntry := r.log.entry(p.next - 1)
+		req := buildApp(r.state.Term, r.id, p.id, r.state.Commit, entries, prevEntry.Index, prevEntry.Term)
+		select {
+		case r.sendChan <- req:
+		default:
+		}
 	}
 }
 
-func (r *raft) registerLeader(leader uint64) {
-	r.leader = leader
-	r.resetElectionTimeout()
-	r.heartbeatTimer.Stop()
-	if !r.initialLeaderElected {
-		close(r.initialLeaderElectedSignalChan)
-		r.initialLeaderElected = true
+func (r *raftStateMachine) broadcastPing() {
+	for id := range r.peers {
+		if r.id == id {
+			continue
+		}
+		ping := buildPing(r.state.Term, r.id, id, r.pendingRead.unixNano, r.pendingRead.index)
+		select {
+		case r.sendChan <- ping:
+		default:
+		}
 	}
 }
 
-type raftFacade interface {
-	raftApplicationFacade
-	raftTransportFacade
-	loop()
-	getID() uint64
-	getRole() role
-	waitUntilInitialLeaderElected()
-	pause()
-	unpause()
+// Figure out the largest match index of a quorum so far.
+func (r *raftStateMachine) quorumMatchIndex() uint64 {
+	matches := r.quorumMatchIndexBuffer
+	i := 0
+	for _, p := range r.peers {
+		matches[i] = p.match
+		i++
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i] > matches[j]
+	})
+	return matches[len(matches)-(r.quorumSize-1)]
 }
 
-func (r *raft) getID() uint64 {
-	return r.id
+// If linearizable consistency, Propose call ends when proposal is committed.
+func (r *raftStateMachine) canAckLinearizableProposal() bool {
+	return r.consistency == ConsistencyLinearizable &&
+		r.pendingProposal.isPending() &&
+		r.pendingProposal.index <= r.state.Commit &&
+		r.pendingProposal.term <= r.state.Term
 }
 
-func (r *raft) getRole() role {
-	return r.role
+// If linearizable consistency, Read call ends when read request is acknowledged by a quorum.
+func (r *raftStateMachine) canAckLinearizableRead() bool {
+	return r.consistency == ConsistencyLinearizable &&
+		r.pendingRead.isPending() &&
+		r.pendingRead.acks >= r.quorumSize && r.lastEntryTerm == r.state.Term
 }
 
-func (r *raft) waitUntilInitialLeaderElected() {
-	<-r.initialLeaderElectedSignalChan
+// proposal may already have been committed, but just in case it wasn't...
+func (r *raftStateMachine) endPendingProposal(err error) {
+	result := proposalResponse{
+		err: err,
+	}
+	select {
+	case r.propRespChan <- result:
+	default:
+	}
+	// zero out pending proposal
+	r.pendingProposal = pendingProposal{}
 }
 
-func (r *raft) pause() {
-	r.stop <- struct{}{}
+// ack (nil error) or cancel (non-nil error) any pending read requests
+func (r *raftStateMachine) endPendingRead(err error) {
+	if r.state.Role == raftpb.RoleLeader {
+		result := readResponse{
+			index: r.pendingRead.index,
+			err:   err,
+		}
+		select {
+		case r.readRespChan <- result:
+		default:
+		}
+	}
+	// zero out pending read
+	r.pendingRead = pendingRead{}
 }
 
-func (r *raft) unpause() {
-	go r.loop()
+// update commit and alert downstream application state machine
+func (r *raftStateMachine) updateCommit(newCommit uint64) {
+	r.state.Commit = newCommit
+	r.commitChan <- newCommit
 }
 
-type raftApplicationFacade interface {
-	apply() <-chan []byte
-	applyAck() chan<- struct{}
-	propose() chan<- []byte
+func (r *raftStateMachine) start() {
+	r.electionTicker.Start()
+	r.heartbeatTicker.Start()
+	go func() {
+		if err := r.run(); err != nil {
+			log.Print(err)
+		}
+	}()
 }
 
-type raftTransportFacade interface {
-	recv() chan<- raftpb.Message
-	send() <-chan raftpb.Message
+func (r *raftStateMachine) stop() {
+	r.stopChan <- struct{}{}
+	r.electionTicker.Stop()
+	r.heartbeatTicker.Stop()
 }
 
-func (r *raft) apply() <-chan []byte {
-	return r.applyChan
-}
+// newRaftStateMachine constructs a new `raftStateMachine` from `Configuration`.
+// Remember to connect this to a `transport` via `bind`.
+func newRaftStateMachine(
+	c Configuration,
+	recvChan <-chan raftpb.Message,
+	sendChan chan<- raftpb.Message,
+) (*raftStateMachine, error) {
+	if c.MsgBufferSize < len(c.PeerAddresses)-1 {
+		return nil, fmt.Errorf(
+			"MsgBufferSize (%d) is too small; it must be at least %d",
+			c.MsgBufferSize, len(c.PeerAddresses)-1)
+	}
 
-func (r *raft) applyAck() chan<- struct{} {
-	return r.applyAckChan
-}
+	heartbeatTicker := newHeartbeatTicker(c.TickPeriod, c.HeartbeatTicks)
+	electionTicker := newElectionTicker(c.TickPeriod, c.MinElectionTicks, c.MaxElectionTicks)
 
-func (r *raft) propose() chan<- []byte {
-	return r.proposeChan
-}
+	for _, tickerOption := range c.TickerOptions {
+		switch x := tickerOption.(type) {
+		case withElectionTickerTickerOption:
+			heartbeatTicker = x.t
+		case withHeartbeatTickerTickerOption:
+			electionTicker = x.t
+		}
+	}
 
-func (r *raft) recv() chan<- raftpb.Message {
-	return r.recvChan
-}
+	r := raftStateMachine{
+		// ticker
+		heartbeatTicker: heartbeatTicker,
+		electionTicker:  electionTicker,
+		heartbeatC:      nil,
 
-func (r *raft) send() <-chan raftpb.Message {
-	return r.sendChan
-}
+		// network io
+		recvChan: recvChan,
+		sendChan: sendChan,
 
-func getAppendRequest(msg raftpb.Message) raftpb.AppendRequest {
-	return *msg.Message.(*raftpb.Message_AppendRequest).AppendRequest
-}
+		// proposals
+		pendingProposal: pendingProposal{},
+		propReqChan:     make(chan proposalRequest),
+		propRespChan:    make(chan proposalResponse),
 
-func getAppendResponse(msg raftpb.Message) raftpb.AppendResponse {
-	return *msg.Message.(*raftpb.Message_AppendResponse).AppendResponse
-}
+		// reads
+		pendingRead:  pendingRead{},
+		readReqChan:  make(chan readRequest),
+		readRespChan: make(chan readResponse),
 
-func getVoteRequest(msg raftpb.Message) raftpb.VoteRequest {
-	return *msg.Message.(*raftpb.Message_VoteRequest).VoteRequest
-}
+		// applies
+		commitChan: make(chan uint64),
 
-func getVoteResponse(msg raftpb.Message) raftpb.VoteResponse {
-	return *msg.Message.(*raftpb.Message_VoteResponse).VoteResponse
-}
+		// state requests
+		stateReqChan:  make(chan stateReq),
+		stateRespChan: make(chan raftpb.State),
 
-func getProposeRequest(msg raftpb.Message) raftpb.ProposeRequest {
-	return *msg.Message.(*raftpb.Message_ProposeRequest).ProposeRequest
-}
-
-func buildAppendRequest(term, from, to uint64, req raftpb.AppendRequest) raftpb.Message {
-	return raftpb.Message{
-		From: from,
-		To:   to,
-		Term: term,
-		Message: &raftpb.Message_AppendRequest{
-			AppendRequest: &req,
+		// raft state
+		id:          c.ID,
+		consistency: c.Consistency,
+		state: raftpb.State{
+			Role:     raftpb.RoleFollower,
+			Term:     0,
+			Leader:   0,
+			Commit:   0,
+			VotedFor: 0,
 		},
+		quorumSize:     len(c.PeerAddresses)/2 + 1,
+		lastEntryIndex: 0,
+		lastEntryTerm:  0,
+		peers:          map[uint64]*peer{},
+
+		log:                    newLog(),
+		quorumMatchIndexBuffer: make([]uint64, len(c.PeerAddresses)/2),
+		stopChan:               make(chan struct{}),
 	}
+	for id := range c.PeerAddresses {
+		r.peers[id] = &peer{id: id}
+	}
+	return &r, nil
 }
 
-func buildAppendResponse(term, from, to uint64, resp raftpb.AppendResponse) raftpb.Message {
-	return raftpb.Message{
-		Term: term,
-		From: from,
-		To:   to,
-		Message: &raftpb.Message_AppendResponse{
-			AppendResponse: &resp,
-		},
-	}
+// peer contains all info about a peer node from the perspective of
+// this node.
+type peer struct {
+	// peer node's ID
+	id uint64
+	// last known largest index that this peer matches this node's log
+	match uint64
+	// index of the prefix log of entries to send in the heartbeat to the peer
+	next uint64
+	// whether or not the peer responded to the heartbeat within the election timeout
+	ack bool
+	// vote was granted to elect us by this peer
+	voteGranted bool
 }
 
-func buildVoteRequest(term, from, to uint64, req raftpb.VoteRequest) raftpb.Message {
-	return raftpb.Message{
-		Term: term,
-		From: from,
-		To:   to,
-		Message: &raftpb.Message_VoteRequest{
-			VoteRequest: &req,
-		},
-	}
+// Proposals
+type pendingProposal struct {
+	index, term uint64
+	unixNano    int64
 }
 
-func buildVoteResponse(term, from, to uint64, resp raftpb.VoteResponse) raftpb.Message {
-	return raftpb.Message{
-		Term: term,
-		From: from,
-		To:   to,
-		Message: &raftpb.Message_VoteResponse{
-			VoteResponse: &resp,
-		},
-	}
+type proposalRequest struct {
+	unixNano int64
+	data     []byte
 }
 
-func buildProposeRequest(term, from, to uint64, req raftpb.ProposeRequest) raftpb.Message {
-	return raftpb.Message{
-		Term: term,
-		From: from,
-		To:   to,
-		Message: &raftpb.Message_ProposeRequest{
-			ProposeRequest: &req,
-		},
-	}
+func (p pendingProposal) isPending() bool {
+	return p.unixNano != 0
 }
+
+type proposalResponse struct {
+	err error
+}
+
+// Reads
+type readRequest struct {
+	unixNano int64
+}
+
+type pendingRead struct {
+	index    uint64
+	unixNano int64
+	acks     int
+}
+
+func (p pendingRead) isPending() bool {
+	return p.unixNano != 0
+}
+
+type readResponse struct {
+	index uint64
+	err   error
+}
+
+type stateReq struct{}

@@ -5,6 +5,64 @@ import "github.com/gogo/protobuf/gogoproto/gogo.proto";
 
 option (gogoproto.marshaler_all) = true;
 option (gogoproto.unmarshaler_all) = true;
+option (gogoproto.goproto_enum_prefix_all) = false;
+
+message Message {
+  // Fields in all Messages
+  optional uint64      term     = 1  [(gogoproto.nullable) = false];
+  optional uint64      from     = 2  [(gogoproto.nullable) = false];
+  optional uint64      to       = 3  [(gogoproto.nullable) = false];
+  optional MessageType type     = 4  [(gogoproto.nullable) = false];
+
+  optional uint64      index    = 5  [(gogoproto.nullable) = false];
+  optional uint64      logTerm  = 6  [(gogoproto.nullable) = false];
+  optional uint64      commit   = 7  [(gogoproto.nullable) = false];
+  optional int64       unixNano = 8  [(gogoproto.nullable) = false];
+  repeated Entry       entries  = 9  [(gogoproto.nullable) = false];
+}
+
+enum MessageType {
+  // MsgApp Fields
+  // * commit:  leader's commit
+  // * entries: entries to append
+  // * logTerm: previous entry term
+  // * index:   previous entry index
+  MsgApp      = 0;
+
+  // MsgAppResp Fields
+  // * index:   index of the largest match index, 0 if unsuccessful
+  MsgAppResp  = 1;
+
+  // MsgPing Fields
+  // * unixNano: context associated with a read request
+  // * index: requested read index
+  MsgPing     = 2;
+
+  // MsgPong Fields
+  // * unixNano: context associated with a read request
+  // * index: requested read index
+  MsgPong     = 3;
+
+  // MsgProp Fields
+  // * unixNano: context associated with a proposal request
+  // * entries: contains only 1 entry, of which only the data field is used
+  //            to contain the proposed data
+  MsgProp     = 4;
+
+  // MsgPropResp Fields
+  // * unixNano: context associated with a proposal request
+  // * index:   index of the successfully proposed entry, 0 if unsuccessful
+  // * logTerm: term of the successfully proposed entry, 0 if unsuccessful
+  MsgPropResp = 5;
+
+  // MsgVote Fields
+  // * index:   index of the candidate's last entry
+  // * logTerm: term of the candidate's last entry
+  MsgVote     = 6;
+
+  // MsgVoteResp Fields (none)
+  MsgVoteResp = 7;
+}
 
 message Entry {
   optional uint64 index = 1  [(gogoproto.nullable) = false];
@@ -12,44 +70,20 @@ message Entry {
   optional bytes  data  = 3  [(gogoproto.nullable) = false];
 }
 
-message Message {
-  optional uint64      term = 1  [(gogoproto.nullable) = false];
-  optional uint64      from = 2  [(gogoproto.nullable) = false];
-  optional uint64      to   = 3  [(gogoproto.nullable) = false];
-  oneof message {
-    AppendRequest  append_request  = 4;
-    AppendResponse append_response = 5;
-    VoteRequest    vote_request    = 6;
-    VoteResponse   vote_response   = 7;
-    ProposeRequest propose_request = 8;
-  }
+message State {
+  optional Role   role     = 1  [(gogoproto.nullable) = false];
+  optional uint64 term     = 2  [(gogoproto.nullable) = false];
+  optional uint64 leader   = 3  [(gogoproto.nullable) = false];
+  optional uint64 commit   = 4  [(gogoproto.nullable) = false];
+  optional uint64 votedFor = 5  [(gogoproto.nullable) = false];
 }
 
-message AppendRequest {
-  optional uint64 prev_index = 1  [(gogoproto.nullable) = false];
-  optional uint64 prev_term  = 2  [(gogoproto.nullable) = false];
-  optional uint64 committed  = 3  [(gogoproto.nullable) = false];
-  repeated Entry entries     = 4  [(gogoproto.nullable) = false];
+enum Role {
+  RoleFollower  = 0;
+  RoleCandidate = 1;
+  RoleLeader    = 2;
 }
 
-message AppendResponse {
-  optional bool success = 1  [(gogoproto.nullable) = false];
-  optional uint64 index = 2  [(gogoproto.nullable) = false];
-}
-
-message VoteRequest {
-  optional uint64 index = 1  [(gogoproto.nullable) = false];
-}
-
-message VoteResponse {
-  optional bool granted = 1  [(gogoproto.nullable) = false];
-}
-
-// extensions
-message ProposeRequest {
-  optional bytes data = 1  [(gogoproto.nullable) = false];
-}
-
-service Raft {
+service RaftProtocol {
   rpc Communicate(stream Message) returns (stream Message) {}
 }
