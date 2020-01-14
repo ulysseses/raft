@@ -41,7 +41,14 @@ func (n *Node) Read(ctx context.Context) error {
 
 // State returns the latest known state of the Raft node.
 func (n *Node) State() raftpb.State {
-	return n.r.getState()
+	n.r.stateReqChan <- stateReq{}
+	return <-n.r.stateRespChan
+}
+
+// Peers returns the latest state of this node's peers.
+func (n *Node) Peers() map[uint64]Peer {
+	n.r.peerReqChan <- peerRequest{}
+	return <-n.r.peerRespChan
 }
 
 // propose proposes data to the raft log.

@@ -3,6 +3,7 @@ package raft
 import (
 	"time"
 
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 )
 
@@ -10,10 +11,13 @@ import (
 type Configuration struct {
 	// ID of the Raft node to configure.
 	ID uint64
+
 	// PeerAddresses maps all Raft nodes from ID to address.
 	PeerAddresses map[uint64]string
+
 	// TickPeriod is the period of time at which the ticker should fire.
 	TickPeriod time.Duration
+
 	// MinElectionTicks is the minimum number of tick periods before an
 	// election timeout should fire.
 	// MaxElectionTIcks is the maximum number of tick periods before an
@@ -21,17 +25,27 @@ type Configuration struct {
 	// HeartbeatTicks is the number of tick periods before a heartbeat
 	// should fire.
 	MinElectionTicks, MaxElectionTicks, HeartbeatTicks uint
+
 	// Consistency is the consistency level to use for the Raft cluster.
 	Consistency Consistency
+
 	// MsgBufferSize is the number of Raft protocol messages allowed to be
 	// buffered before the Raft node can process/send them out.
 	MsgBufferSize int
+
 	// GRPCOptions is an optional list of GRPCOptions to apply to configure
 	// gRPC.
 	GRPCOptions []GRPCOption
+
 	// TickerOptions is an optional list of TickerOptions to apply to configure
 	// the ticker.
 	TickerOptions []TickerOption
+
+	// Logger. If nil, a default one is constructed.
+	Logger *zap.Logger
+
+	// SugaredLogger. If nil, a default one is constructed.
+	SugaredLogger *zap.SugaredLogger
 }
 
 // Consistency is the consistency mode that Raft operations should support.

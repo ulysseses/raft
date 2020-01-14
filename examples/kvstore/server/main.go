@@ -2,19 +2,19 @@ package main
 
 import (
 	"flag"
-	"log"
+	"fmt"
 	"os"
 	"runtime"
 	"runtime/pprof"
-	"strconv"
 	"time"
 
 	"github.com/ulysseses/raft/raft"
 	"github.com/valyala/fasthttp"
+	"go.uber.org/zap"
 )
 
 var (
-	port       = 8080
+	addr       = ":8080"
 	cpuProfile = ""
 	memProfile = ""
 	config     = raft.Configuration{
@@ -30,7 +30,7 @@ var (
 )
 
 func init() {
-	flag.IntVar(&port, "port", port, "port for http kv store")
+	flag.StringVar(&addr, "addr", addr, "address for http kv store")
 	flag.StringVar(&cpuProfile, "cpuProfile", cpuProfile, "write cpu profile to a file")
 	flag.StringVar(&memProfile, "memProfile", memProfile, "write memory profile to a file")
 	flag.Var(
@@ -61,46 +61,58 @@ func init() {
 func main() {
 	flag.Parse()
 
+	logger, err := zap.NewProduction()
+	if err != nil {
+		fmt.Print(err)
+		return
+	}
+	sugaredLogger := logger.Sugar()
+
 	if cpuProfile != "" {
-		log.Print("writing cpu profile to ", cpuProfile)
+		logger.Info("writing cpu profile", zap.String("cpuProfile", cpuProfile))
 		f, err := os.Create(cpuProfile)
 		if err != nil {
-			log.Fatal("could not create CPU profile: ", err)
+			logger.Fatal("could not create CPU profile", zap.Error(err))
 		}
 		defer f.Close()
 		if err := pprof.StartCPUProfile(f); err != nil {
-			log.Fatal("could not start CPU profile: ", err)
+			logger.Fatal("could not start CPU profile", zap.Error(err))
 		}
 	}
 
 	if memProfile != "" {
-		log.Print("writing mem profile to ", memProfile)
+		logger.Info("writing mem profile", zap.String("memProfile", memProfile))
 		f, err := os.Create(memProfile)
 		if err != nil {
-			log.Fatal("could not create memory profile: ", err)
+			logger.Fatal("could not create memory profile", zap.Error(err))
 		}
 		defer f.Close()
 		defer func() {
 			runtime.GC() // get up-to-date statistics
 			if err := pprof.WriteHeapProfile(f); err != nil {
-				log.Fatal("could not write memory profile: ", err)
+				logger.Fatal("could not write memory profile", zap.Error(err))
 			}
 		}()
 	}
 
+	config.Logger = logger
+	config.SugaredLogger = sugaredLogger
+
 	kvStore := newKVStore()
 	node, err := raft.NewNode(config, kvStore)
 	if err != nil {
-		log.Fatal(err)
+		logger.Fatal("could not create Raft node", zap.Error(err))
 	}
 	node.Start()
 	defer node.Stop()
 	kvStore.node = node
-	httpKVAPI := &httpKVAPI{kvStore: kvStore}
-	log.Printf(
-		"starting http kv store back by single raft node at port %d",
-		port)
-	if err := fasthttp.ListenAndServe(":"+strconv.Itoa(port), httpKVAPI.HandleFastHTTP); err != nil {
-		log.Fatal(err)
+	httpKVAPI := &httpKVAPI{
+		kvStore:       kvStore,
+		logger:        logger,
+		sugaredLogger: sugaredLogger,
+	}
+	logger.Info("starting http kv store backed by raft", zap.String("addr", addr))
+	if err := fasthttp.ListenAndServe(addr, httpKVAPI.Route); err != nil {
+		logger.Fatal("failed to listen", zap.Error(err))
 	}
 }
