@@ -4,8 +4,7 @@ go 1.13
 
 require (
 	github.com/gogo/protobuf v1.3.1
-	github.com/golang/protobuf v1.3.2
-	github.com/kazegusuri/go-proto-zap-marshaler v0.0.0-20181215102720-3aeb027abd86
+	github.com/hashicorp/go-multierror v1.0.0
 	github.com/valyala/fasthttp v1.6.0
 	go.uber.org/atomic v1.5.1 // indirect
 	go.uber.org/multierr v1.4.0 // indirect

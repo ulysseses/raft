@@ -29,12 +29,17 @@ type Configuration struct {
 	// Consistency is the consistency level to use for the Raft cluster.
 	Consistency Consistency
 
-	// MsgBufferSize is the number of Raft protocol messages allowed to be
+	// MsgBufferSize is max the number of Raft protocol messages allowed to be
 	// buffered before the Raft node can process/send them out.
 	MsgBufferSize int
 
-	// GRPCOptions is an optional list of GRPCOptions to apply to configure
-	// gRPC.
+	// DialTimeout is the timeout for dialing to peers.
+	DialTimeout time.Duration
+
+	// ConnectionAttemptDelay is the duration to wait per connection attempt.
+	ConnectionAttemptDelay time.Duration
+
+	// GRPCOptions is an optional list of GRPCOptions to apply to configure gRPC.
 	GRPCOptions []GRPCOption
 
 	// TickerOptions is an optional list of TickerOptions to apply to configure
@@ -43,9 +48,6 @@ type Configuration struct {
 
 	// Logger. If nil, a default one is constructed.
 	Logger *zap.Logger
-
-	// SugaredLogger. If nil, a default one is constructed.
-	SugaredLogger *zap.SugaredLogger
 }
 
 // Consistency is the consistency mode that Raft operations should support.
@@ -63,21 +65,21 @@ type GRPCOption interface{ isGRPCOption() }
 
 // WithGRPCServerOption implements GRPCOption and adds a `grpc.ServerOption`.
 type WithGRPCServerOption struct {
-	opt grpc.ServerOption
+	Opt grpc.ServerOption
 }
 
 func (WithGRPCServerOption) isGRPCOption() {}
 
 // WithGRPCDialOption implements GRPCOption and adds a `grpc.DialOption`.
 type WithGRPCDialOption struct {
-	opt grpc.DialOption
+	Opt grpc.DialOption
 }
 
 func (WithGRPCDialOption) isGRPCOption() {}
 
 // WithGRPCCallOption implements GRPCOption and adds a `grpc.CallOption`.
 type WithGRPCCallOption struct {
-	opt grpc.CallOption
+	Opt grpc.CallOption
 }
 
 func (WithGRPCCallOption) isGRPCOption() {}
@@ -110,3 +112,14 @@ type withElectionTickerTickerOption struct {
 }
 
 func (withElectionTickerTickerOption) isTickerOption() {}
+
+func coalesceLogger(logger *zap.Logger) (*zap.Logger, error) {
+	if logger == nil {
+		var err error
+		logger, err = zap.NewProduction()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return logger, nil
+}

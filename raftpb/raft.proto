@@ -22,46 +22,48 @@ message Message {
 }
 
 enum MessageType {
+  MsgUnknown  = 0;
+  
   // MsgApp Fields
   // * commit:  leader's commit
   // * entries: entries to append
   // * logTerm: previous entry term
   // * index:   previous entry index
-  MsgApp      = 0;
+  MsgApp      = 1;
 
   // MsgAppResp Fields
   // * index:   index of the largest match index, 0 if unsuccessful
-  MsgAppResp  = 1;
+  MsgAppResp  = 2;
 
   // MsgPing Fields
   // * unixNano: context associated with a read request
   // * index: requested read index
-  MsgPing     = 2;
+  MsgPing     = 3;
 
   // MsgPong Fields
   // * unixNano: context associated with a read request
   // * index: requested read index
-  MsgPong     = 3;
+  MsgPong     = 4;
 
   // MsgProp Fields
   // * unixNano: context associated with a proposal request
   // * entries: contains only 1 entry, of which only the data field is used
   //            to contain the proposed data
-  MsgProp     = 4;
+  MsgProp     = 5;
 
   // MsgPropResp Fields
   // * unixNano: context associated with a proposal request
   // * index:   index of the successfully proposed entry, 0 if unsuccessful
   // * logTerm: term of the successfully proposed entry, 0 if unsuccessful
-  MsgPropResp = 5;
+  MsgPropResp = 6;
 
   // MsgVote Fields
   // * index:   index of the candidate's last entry
   // * logTerm: term of the candidate's last entry
-  MsgVote     = 6;
+  MsgVote     = 7;
 
   // MsgVoteResp Fields (none)
-  MsgVoteResp = 7;
+  MsgVoteResp = 8;
 }
 
 message Entry {

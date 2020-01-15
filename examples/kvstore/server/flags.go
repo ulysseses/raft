@@ -9,14 +9,15 @@ import (
 )
 
 type mapValue struct {
-	m map[uint64]string
+	m *map[uint64]string
 }
 
-func (v mapValue) String() string {
+func (v *mapValue) String() string {
 	return "0,tcp://localhost:8080"
 }
 
-func (v mapValue) Set(arg string) error {
+func (v *mapValue) Set(arg string) error {
+	*v.m = map[uint64]string{}
 	splits := strings.Split(arg, "|")
 	for _, split := range splits {
 		innerSplits := strings.Split(split, ",")
@@ -28,7 +29,7 @@ func (v mapValue) Set(arg string) error {
 			return err
 		}
 		addr := innerSplits[1]
-		v.m[id] = addr
+		(*v.m)[id] = addr
 	}
 	return nil
 }

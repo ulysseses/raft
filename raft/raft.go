@@ -63,6 +63,7 @@ type raftStateMachine struct {
 	log                    *raftLog
 	quorumMatchIndexBuffer []uint64
 	stopChan               chan struct{}
+	stopErrChan            chan error
 
 	logger        *zap.Logger
 	sugaredLogger *zap.SugaredLogger
@@ -103,10 +104,10 @@ func (r *raftStateMachine) run() error {
 		case readReq := <-r.readReqChan:
 			r.logger.Info("incoming read request", zap.Int64("unixNano", readReq.unixNano))
 			r.read(readReq)
-		case _ = <-r.stateReqChan:
+		case <-r.stateReqChan:
 			r.logger.Info("incoming state request", zap.String("state", r.state.String()))
 			r.stateRespChan <- r.state
-		case _ = <-r.peerReqChan:
+		case <-r.peerReqChan:
 			peers := map[uint64]Peer{}
 			for _, p := range r.peers {
 				peers[p.ID] = *p
@@ -132,12 +133,12 @@ func (r *raftStateMachine) hasQuorumAcks() bool {
 }
 
 func (r *raftStateMachine) processMessage(msg raftpb.Message) error {
-	r.logger.Info(
-		"received raft protocol message",
-		zap.Uint64("term", r.state.Term),
-		zap.Uint64("msgTerm", msg.Term))
+	// r.logger.Info(
+	// 	"received raft protocol message",
+	// 	zap.Uint64("term", r.state.Term),
+	// 	zap.Uint64("msgTerm", msg.Term))
 	if msg.Term < r.state.Term {
-		r.logger.Info("ignoring stale msg")
+		r.logger.Info("ignoring stale msg", zap.String("msg", msg.String()))
 		return nil
 	}
 	if msg.Term > r.state.Term {
@@ -188,7 +189,7 @@ func (r *raftStateMachine) processMessage(msg raftpb.Message) error {
 }
 
 func (r *raftStateMachine) processApp(msg msgApp) {
-	r.logger.Info("processing MsgApp", zap.Object("msg", msg))
+	r.logger.Info("processing MsgApp")
 	r.state.Leader = msg.from
 	switch r.state.Role {
 	case raftpb.RoleLeader:
@@ -199,23 +200,23 @@ func (r *raftStateMachine) processApp(msg msgApp) {
 	r.electionTicker.Reset()
 
 	var largestMatchIndex uint64 = 0
-	localPrevTerm := r.log.entry(msg.index).Term
 	success := msg.term >= r.state.Term &&
 		msg.index <= r.lastEntryIndex &&
-		msg.logTerm == localPrevTerm
+		msg.logTerm == r.log.entry(msg.index).Term
 	if success {
-		r.lastEntryIndex = r.log.append(msg.index, msg.entries...)
+		r.lastEntryIndex, r.lastEntryTerm = r.log.append(msg.index, msg.entries...)
 		largestMatchIndex = r.lastEntryIndex
-		r.lastEntryTerm = msg.entries[len(msg.entries)-1].Term
 
 		newCommit := msg.commit
 		if newCommit >= r.lastEntryIndex {
 			newCommit = r.lastEntryIndex
 		}
-		r.updateCommit(newCommit)
+		if newCommit > r.state.Commit {
+			r.updateCommit(newCommit)
+		}
 	}
 
-	resp := buildAppResp(r.state.Term, r.id, msg.to, largestMatchIndex)
+	resp := buildAppResp(r.state.Term, r.id, msg.from, largestMatchIndex)
 	select {
 	case r.sendChan <- resp:
 	default:
@@ -223,7 +224,7 @@ func (r *raftStateMachine) processApp(msg msgApp) {
 }
 
 func (r *raftStateMachine) processAppResp(msg msgAppResp) {
-	r.logger.Info("processing MsgAppResp", zap.Object("msg", msg))
+	r.logger.Info("processing MsgAppResp")
 	switch r.state.Role {
 	case raftpb.RoleFollower:
 		return
@@ -261,7 +262,7 @@ func (r *raftStateMachine) processAppResp(msg msgAppResp) {
 }
 
 func (r *raftStateMachine) processPing(msg msgPing) {
-	r.logger.Info("processing MsgPing", zap.Object("msg", msg))
+	r.logger.Info("processing MsgPing")
 	if msg.from == r.state.Leader {
 		switch r.state.Role {
 		case raftpb.RoleFollower:
@@ -280,7 +281,7 @@ func (r *raftStateMachine) processPing(msg msgPing) {
 }
 
 func (r *raftStateMachine) processPong(msg msgPong) {
-	r.logger.Info("processing MsgPong", zap.Object("msg", msg))
+	r.logger.Info("processing MsgPong")
 	if r.state.Role != raftpb.RoleLeader {
 		return
 	}
@@ -297,7 +298,7 @@ func (r *raftStateMachine) processPong(msg msgPong) {
 }
 
 func (r *raftStateMachine) processProp(msg msgProp) {
-	r.logger.Info("processing MsgProp", zap.Object("msg", msg))
+	r.logger.Info("processing MsgProp")
 	// fail the proposal if not leader
 	if r.state.Role != raftpb.RoleLeader {
 		resp := buildPropResp(
@@ -315,7 +316,7 @@ func (r *raftStateMachine) processProp(msg msgProp) {
 		Term:  r.state.Term,
 		Data:  msg.data,
 	}
-	r.lastEntryIndex = r.log.append(r.lastEntryIndex, entry)
+	r.lastEntryIndex, r.lastEntryTerm = r.log.append(r.lastEntryIndex, entry)
 
 	resp := buildPropResp(
 		r.state.Term, r.id, msg.from,
@@ -327,7 +328,7 @@ func (r *raftStateMachine) processProp(msg msgProp) {
 }
 
 func (r *raftStateMachine) processPropResp(msg msgPropResp) {
-	r.logger.Info("processing MsgPropResp", zap.Object("msg", msg))
+	r.logger.Info("processing MsgPropResp")
 	if !r.pendingProposal.isPending() {
 		return
 	}
@@ -343,16 +344,15 @@ func (r *raftStateMachine) processPropResp(msg msgPropResp) {
 }
 
 func (r *raftStateMachine) processVote(msg msgVote) {
-	r.logger.Info("processing MsgVote", zap.Object("msg", msg))
+	r.logger.Info("processing MsgVote")
 	switch r.state.Role {
 	case raftpb.RoleLeader:
 		return
 	case raftpb.RoleCandidate:
 		return
 	}
-	grantVote := msg.term >= r.state.Term &&
-		(r.state.VotedFor == 0 || r.state.VotedFor == msg.from) &&
-		(msg.term > r.state.Term || msg.index >= r.lastEntryIndex)
+	grantVote := r.state.VotedFor == 0 &&
+		(msg.logTerm > r.state.Term || msg.index >= r.lastEntryIndex)
 	if grantVote {
 		r.state.VotedFor = msg.from
 		resp := buildVoteResp(r.state.Term, r.id, msg.from)
@@ -364,7 +364,7 @@ func (r *raftStateMachine) processVote(msg msgVote) {
 }
 
 func (r *raftStateMachine) processVoteResp(msg msgVoteResp) {
-	r.logger.Info("processing MsgVoteResp", zap.Object("msg", msg))
+	r.logger.Info("processing MsgVoteResp")
 	r.peers[msg.from].VoteGranted = true
 	voteCount := 0
 	for _, p := range r.peers {
@@ -387,7 +387,6 @@ func (r *raftStateMachine) propose(req proposalRequest) {
 			req.unixNano, req.data)
 		select {
 		case r.sendChan <- prop:
-			r.logger.Info("sending MsgProp", zap.Object("msg", getProp(prop)))
 		default:
 			r.pendingProposal = pendingProposal{}
 			r.endPendingProposal(ErrDroppedProposal)
@@ -405,7 +404,7 @@ func (r *raftStateMachine) propose(req proposalRequest) {
 		term:     entry.Term,
 		unixNano: req.unixNano,
 	}
-	r.lastEntryIndex = r.log.append(r.lastEntryIndex, entry)
+	r.lastEntryIndex, r.lastEntryTerm = r.log.append(r.lastEntryIndex, entry)
 	// serializable shortcut
 	if r.consistency == ConsistencySerializable {
 		r.endPendingProposal(nil)
@@ -434,6 +433,7 @@ func (r *raftStateMachine) read(req readRequest) {
 
 func (r *raftStateMachine) becomeFollower() {
 	r.logger.Info("becoming follower")
+	r.heartbeatC = nil
 	r.state.Role = raftpb.RoleFollower
 	r.state.VotedFor = 0
 	for _, p := range r.peers {
@@ -450,22 +450,25 @@ func (r *raftStateMachine) becomeFollower() {
 
 func (r *raftStateMachine) becomeCandidate() {
 	r.logger.Info("becoming candidate", zap.Uint64("newTerm", r.state.Term+1))
+	r.heartbeatC = nil
 	r.state.Role = raftpb.RoleCandidate
 	r.state.Leader = 0
 	r.state.Term++
 	r.state.VotedFor = r.id
+
+	// Send vote requests to other peers
 	lastEntry := r.log.entry(r.lastEntryIndex)
 	for _, p := range r.peers {
-		p.VoteGranted = false
 		if r.id == p.ID {
+			p.VoteGranted = true
 			continue
 		}
+		p.VoteGranted = false
 		req := buildVote(r.state.Term, r.id, p.ID, lastEntry.Index, lastEntry.Term)
 		select {
 		case r.sendChan <- req:
-			r.logger.Info("sending MsgVote", zap.Object("msg", getVote(req)))
 		default:
-			r.logger.Info("dropping MsgVote", zap.Object("msg", getVote(req)))
+			r.logger.Info("dropping MsgVote")
 		}
 	}
 
@@ -474,6 +477,12 @@ func (r *raftStateMachine) becomeCandidate() {
 	}
 	if r.pendingRead.isPending() {
 		r.endPendingRead(ErrDroppedRead)
+	}
+
+	// shortcut: 1-node cluster
+	if r.quorumSize == 1 {
+		r.logger.Info("1-node cluster shortcut: become leader instantly")
+		r.becomeLeader()
 	}
 }
 
@@ -489,17 +498,17 @@ func (r *raftStateMachine) becomeLeader() {
 	}
 
 	// Try to commit an (empty) entry from the newly elected term
-	r.lastEntryIndex = r.log.append(r.lastEntryIndex, raftpb.Entry{
+	r.lastEntryIndex, r.lastEntryTerm = r.log.append(r.lastEntryIndex, raftpb.Entry{
 		Index: r.lastEntryIndex + 1,
 		Term:  r.state.Term,
 	})
-	r.lastEntryTerm = r.state.Term
 	r.broadcastApp()
 	r.heartbeatTicker.Reset()
 	r.heartbeatC = r.heartbeatTicker.C()
 }
 
 func (r *raftStateMachine) broadcastApp() {
+	r.logger.Info("heartbeat")
 	for _, p := range r.peers {
 		if r.id == p.ID {
 			continue
@@ -514,9 +523,8 @@ func (r *raftStateMachine) broadcastApp() {
 		req := buildApp(r.state.Term, r.id, p.ID, r.state.Commit, entries, prevEntry.Index, prevEntry.Term)
 		select {
 		case r.sendChan <- req:
-			r.logger.Info("sending MsgApp", zap.Object("msg", getApp(req)))
 		default:
-			r.logger.Info("dropping MsgApp", zap.Object("msg", getApp(req)))
+			r.logger.Info("dropping MsgApp")
 		}
 	}
 }
@@ -529,9 +537,8 @@ func (r *raftStateMachine) broadcastPing() {
 		ping := buildPing(r.state.Term, r.id, id, r.pendingRead.unixNano, r.pendingRead.index)
 		select {
 		case r.sendChan <- ping:
-			r.logger.Info("sending MsgPing", zap.Object("msg", getPing(ping)))
 		default:
-			r.logger.Info("dropping MsgPing", zap.Object("msg", getPing(ping)))
+			r.logger.Info("dropping MsgPing")
 		}
 	}
 }
@@ -541,13 +548,16 @@ func (r *raftStateMachine) quorumMatchIndex() uint64 {
 	matches := r.quorumMatchIndexBuffer
 	i := 0
 	for _, p := range r.peers {
+		if r.id == p.ID {
+			matches[i] = r.lastEntryIndex
+		}
 		matches[i] = p.Match
 		i++
 	}
 	sort.Slice(matches, func(i, j int) bool {
 		return matches[i] > matches[j]
 	})
-	return matches[len(matches)-(r.quorumSize-1)]
+	return matches[r.quorumSize-1]
 }
 
 // If linearizable consistency, Propose call ends when proposal is committed.
@@ -611,24 +621,28 @@ func (r *raftStateMachine) updateCommit(newCommit uint64) {
 	r.commitChan <- newCommit
 }
 
-func (r *raftStateMachine) start() {
+func (r *raftStateMachine) start() error {
 	r.logger.Info("starting election timeout ticker")
 	r.electionTicker.Start()
 	r.logger.Info("starting heartbeat ticker")
 	r.heartbeatTicker.Start()
 	go func() {
-		if err := r.run(); err != nil {
+		err := r.run()
+		if err != nil {
 			r.logger.Error("raft run loop errored out", zap.Error(err))
 		}
+		r.stopErrChan <- err
 	}()
+	return nil
 }
 
-func (r *raftStateMachine) stop() {
-	r.stopChan <- struct{}{}
+func (r *raftStateMachine) stop() error {
 	r.logger.Info("stopping election timeout ticker")
 	r.electionTicker.Stop()
 	r.logger.Info("stopping heartbeat ticker")
 	r.heartbeatTicker.Stop()
+	r.stopChan <- struct{}{}
+	return <-r.stopErrChan
 }
 
 // newRaftStateMachine constructs a new `raftStateMachine` from `Configuration`.
@@ -654,19 +668,6 @@ func newRaftStateMachine(
 		case withHeartbeatTickerTickerOption:
 			electionTicker = x.t
 		}
-	}
-
-	logger := c.Logger
-	sugaredLogger := c.SugaredLogger
-	if logger == nil {
-		var err error
-		logger, err = zap.NewProduction()
-		if err != nil {
-			return nil, err
-		}
-	}
-	if sugaredLogger == nil {
-		sugaredLogger = logger.Sugar()
 	}
 
 	r := raftStateMachine{
@@ -716,11 +717,12 @@ func newRaftStateMachine(
 		peers:          map[uint64]*Peer{},
 
 		log:                    newLog(),
-		quorumMatchIndexBuffer: make([]uint64, len(c.PeerAddresses)/2),
+		quorumMatchIndexBuffer: make([]uint64, len(c.PeerAddresses)),
 		stopChan:               make(chan struct{}),
+		stopErrChan:            make(chan error),
 
-		logger:        logger,
-		sugaredLogger: sugaredLogger,
+		logger:        c.Logger,
+		sugaredLogger: c.Logger.Sugar(),
 	}
 	for id := range c.PeerAddresses {
 		r.peers[id] = &Peer{ID: id}

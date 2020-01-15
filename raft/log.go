@@ -34,10 +34,12 @@ func (l *raftLog) entries(lo, hi uint64) []raftpb.Entry {
 	return entries
 }
 
-func (l *raftLog) append(prev uint64, entries ...raftpb.Entry) uint64 {
+func (l *raftLog) append(prev uint64, entries ...raftpb.Entry) (uint64, uint64) {
 	l.Lock()
 	l.log = append(l.log[:prev+1], entries...)
-	lastIndex := uint64(len(l.log) - 1)
+	lastEntry := l.log[len(l.log)-1]
+	lastIndex := lastEntry.Index
+	lastTerm := lastEntry.Term
 	l.Unlock()
-	return lastIndex
+	return lastIndex, lastTerm
 }

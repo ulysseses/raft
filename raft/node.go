@@ -2,9 +2,11 @@ package raft
 
 import (
 	"context"
-	"log"
 	"sync"
 	"time"
+
+	multierror "github.com/hashicorp/go-multierror"
+	"go.uber.org/zap"
 
 	"github.com/ulysseses/raft/raftpb"
 )
@@ -20,9 +22,13 @@ type Node struct {
 	readMu    sync.Mutex
 	_padding2 [64]byte
 
-	applied     uint64
-	applyFunc   func([]raftpb.Entry) error
-	stopAppChan chan struct{}
+	applied        uint64
+	applyFunc      func([]raftpb.Entry) error
+	stopAppChan    chan struct{}
+	stopAppErrChan chan error
+
+	logger        *zap.Logger
+	sugaredLogger *zap.SugaredLogger
 }
 
 // Propose should be called by the client/application.
@@ -125,21 +131,34 @@ func (n *Node) runApplication() error {
 }
 
 // Start starts the Raft node.
-func (n *Node) Start() {
-	n.t.start()
-	n.r.start()
+func (n *Node) Start() error {
+	var result *multierror.Error
+	if err := n.t.start(); err != nil {
+		result = multierror.Append(result, err)
+	}
+	if err := n.r.start(); err != nil {
+		result = multierror.Append(result, err)
+	}
 	go func() {
-		if err := n.runApplication(); err != nil {
-			log.Print(err)
+		err := n.runApplication()
+		if err != nil {
+			n.logger.Error("runApplication ended with error", zap.Error(err))
 		}
+		n.stopAppErrChan <- err
 	}()
+	return result.ErrorOrNil()
 }
 
 // Stop stops the Raft node.
-func (n *Node) Stop() {
-	n.stopAppChan <- struct{}{}
+func (n *Node) Stop() error {
+	var result *multierror.Error
 	n.r.stop()
-	n.t.stop()
+	if err := n.t.stop(); err != nil {
+		result = multierror.Append(result, err)
+	}
+	n.stopAppChan <- struct{}{}
+	result = multierror.Append(result, <-n.stopAppErrChan)
+	return result.ErrorOrNil()
 }
 
 // NewNode constructs a new Raft Node from Configuration.
@@ -157,9 +176,12 @@ func NewNode(c Configuration, a Application) (*Node, error) {
 	}
 
 	n := Node{
-		r:           r,
-		t:           t,
-		stopAppChan: make(chan struct{}),
+		r:              r,
+		t:              t,
+		stopAppChan:    make(chan struct{}),
+		stopAppErrChan: make(chan error),
+		logger:         c.Logger,
+		sugaredLogger:  c.Logger.Sugar(),
 	}
 
 	// Attach Application to Node

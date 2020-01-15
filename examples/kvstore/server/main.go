@@ -11,21 +11,27 @@ import (
 	"github.com/ulysseses/raft/raft"
 	"github.com/valyala/fasthttp"
 	"go.uber.org/zap"
+	"google.golang.org/grpc"
 )
 
 var (
-	addr       = ":8080"
+	addr       = ":3001"
 	cpuProfile = ""
 	memProfile = ""
 	config     = raft.Configuration{
-		ID:               0,
-		PeerAddresses:    map[uint64]string{0: "tcp://localhost:8080"},
-		TickPeriod:       time.Millisecond,
-		MinElectionTicks: 10,
-		MaxElectionTicks: 20,
-		HeartbeatTicks:   1,
-		Consistency:      raft.ConsistencySerializable,
-		MsgBufferSize:    1,
+		ID:                     1,
+		PeerAddresses:          map[uint64]string{1: "tcp://localhost:8081"},
+		TickPeriod:             time.Second,
+		MinElectionTicks:       5,
+		MaxElectionTicks:       15,
+		HeartbeatTicks:         2,
+		Consistency:            raft.ConsistencySerializable,
+		MsgBufferSize:          8,
+		DialTimeout:            time.Second,
+		ConnectionAttemptDelay: time.Second,
+		GRPCOptions: []raft.GRPCOption{
+			raft.WithGRPCDialOption{Opt: grpc.WithInsecure()},
+		},
 	}
 )
 
@@ -33,12 +39,13 @@ func init() {
 	flag.StringVar(&addr, "addr", addr, "address for http kv store")
 	flag.StringVar(&cpuProfile, "cpuProfile", cpuProfile, "write cpu profile to a file")
 	flag.StringVar(&memProfile, "memProfile", memProfile, "write memory profile to a file")
+	flag.Uint64Var(&config.ID, "id", config.ID, "Raft node ID")
 	flag.Var(
-		&mapValue{m: config.PeerAddresses},
+		&mapValue{m: &config.PeerAddresses},
 		"peerAddresses",
 		"peer addresses specified as a |-separated string of key-value pairs, "+
 			"which themselves are separated by commas. E.g. "+
-			"\"0,tcp://localhost:8080|1,tcp://localhost:8081|2,tcp://localhost:8082\"")
+			"\"1,tcp://localhost:8081|2,tcp://localhost:8082|3,tcp://localhost:8083\"")
 	flag.DurationVar(&config.TickPeriod, "tickPeriod", config.TickPeriod, "tick period")
 	flag.UintVar(
 		&config.MinElectionTicks, "minElectionTicks", config.MinElectionTicks,
@@ -96,23 +103,28 @@ func main() {
 	}
 
 	config.Logger = logger
-	config.SugaredLogger = sugaredLogger
 
 	kvStore := newKVStore()
 	node, err := raft.NewNode(config, kvStore)
 	if err != nil {
 		logger.Fatal("could not create Raft node", zap.Error(err))
 	}
-	node.Start()
-	defer node.Stop()
+	if err := node.Start(); err != nil {
+		sugaredLogger.Error(err)
+	}
+	defer func() {
+		if err := node.Stop(); err != nil {
+			sugaredLogger.Error(err)
+		}
+	}()
 	kvStore.node = node
 	httpKVAPI := &httpKVAPI{
 		kvStore:       kvStore,
 		logger:        logger,
-		sugaredLogger: sugaredLogger,
+		sugaredLogger: logger.Sugar(),
 	}
 	logger.Info("starting http kv store backed by raft", zap.String("addr", addr))
 	if err := fasthttp.ListenAndServe(addr, httpKVAPI.Route); err != nil {
-		logger.Fatal("failed to listen", zap.Error(err))
+		logger.Error("failed to listen", zap.Error(err))
 	}
 }
