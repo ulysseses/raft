@@ -35,6 +35,8 @@ func createSocket(dir, testName string, id uint64) string {
 }
 
 func createConfigs(tmpl Configuration, dir, testName string, ids ...uint64) map[uint64]Configuration {
+	logger := tmpl.Logger
+
 	configs := map[uint64]Configuration{}
 	tmpl.PeerAddresses = map[uint64]string{}
 	for _, id := range ids {
@@ -42,7 +44,9 @@ func createConfigs(tmpl Configuration, dir, testName string, ids ...uint64) map[
 		tmpl.PeerAddresses[id] = addr
 	}
 	for _, id := range ids {
+		specificLogger := logger.With(zap.Uint64("id", id))
 		tmpl.ID = id
+		tmpl.Logger = specificLogger
 		configs[id] = tmpl
 	}
 	return configs
@@ -52,26 +56,29 @@ func Test_3NodeStartup(t *testing.T) {
 	tmpDir := createTmpDir(t)
 	defer os.RemoveAll(tmpDir)
 
-	logger, err := zap.NewProduction()
+	logCfg := zap.NewProductionConfig()
+	// logCfg.Level.SetLevel(zap.FatalLevel)
+	logger, err := logCfg.Build()
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	tmplConfig := Configuration{
-		TickPeriod:             time.Second,
-		MinElectionTicks:       3,
-		MaxElectionTicks:       6,
+		TickPeriod:             time.Millisecond,
+		MinElectionTicks:       10,
+		MaxElectionTicks:       20,
 		HeartbeatTicks:         1,
-		Consistency:            ConsistencyLinearizable,
-		MsgBufferSize:          6,
-		DialTimeout:            time.Second,
-		ConnectionAttemptDelay: time.Second,
+		Consistency:            ConsistencySerializable,
+		MsgBufferSize:          8,
+		DialTimeout:            time.Millisecond,
+		ConnectionAttemptDelay: time.Millisecond,
+		SendTimeout:            time.Millisecond,
 		GRPCOptions: []GRPCOption{
 			WithGRPCDialOption{Opt: grpc.WithInsecure()},
 		},
 		Logger: logger,
 	}
-	configs := createConfigs(tmplConfig, tmpDir, t.Name(), 0, 1, 2)
+	configs := createConfigs(tmplConfig, tmpDir, t.Name(), 1, 2, 3)
 
 	// hack: use 1 fake application for all three nodes
 	app := &fakeApplication{}
@@ -100,12 +107,13 @@ func Test_3NodeStartup(t *testing.T) {
 		}
 	}
 
-	time.Sleep(10 * time.Second)
+	// simulate passive cluster
+	time.Sleep(100 * time.Millisecond)
 
 	for _, node := range nodes {
 		err := node.Stop()
 		if err != nil {
-			t.Fatal(err)
+			fmt.Print(err)
 		}
 	}
 }

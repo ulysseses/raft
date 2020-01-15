@@ -13,8 +13,6 @@ import (
 var (
 	// ErrDroppedProposal is the error emitted when a proposal got dropped.
 	ErrDroppedProposal = fmt.Errorf("dropped proposal")
-	// ErrNotLeader is the error emitted when trying to propose to a non-leader.
-	ErrNotLeader = fmt.Errorf("not leader")
 	// ErrDroppedRead is emitted if the node serving the read has stepped down
 	// from leader to follower.
 	ErrDroppedRead = fmt.Errorf("dropped read request")
@@ -69,17 +67,16 @@ type raftStateMachine struct {
 	sugaredLogger *zap.SugaredLogger
 }
 
-func (r *raftStateMachine) run() error {
+func (r *raftStateMachine) run() {
 	electionTickerC := r.electionTicker.C()
 	for {
 		select {
 		case <-r.stopChan:
-			r.logger.Info("stopping raft node")
-			return nil
+			r.stopErrChan <- nil
+			return
 		case <-r.heartbeatC: // heartbeatC is null when not leader
 			r.broadcastApp()
 		case <-electionTickerC:
-			r.logger.Info("election timeout", zap.String("role", r.state.Role.String()))
 			if r.state.Role == raftpb.RoleLeader {
 				// Step down to follower role if could not establish quorum
 				if !r.hasQuorumAcks() {
@@ -94,25 +91,22 @@ func (r *raftStateMachine) run() error {
 			}
 		case msg := <-r.recvChan:
 			if err := r.processMessage(msg); err != nil {
-				return err
+				r.logger.Error("raft run loop errored out", zap.Error(err))
+				fmt.Printf("raft run loop errored out: %v", err)
+				r.stopErrChan <- err
+				return
 			}
 		case propReq := <-r.propReqChan:
-			r.logger.Info("incoming proposal",
-				zap.Int64("unixNano", propReq.unixNano),
-				zap.ByteString("data", propReq.data))
 			r.propose(propReq)
 		case readReq := <-r.readReqChan:
-			r.logger.Info("incoming read request", zap.Int64("unixNano", readReq.unixNano))
 			r.read(readReq)
 		case <-r.stateReqChan:
-			r.logger.Info("incoming state request", zap.String("state", r.state.String()))
 			r.stateRespChan <- r.state
 		case <-r.peerReqChan:
 			peers := map[uint64]Peer{}
 			for _, p := range r.peers {
 				peers[p.ID] = *p
 			}
-			r.logger.Info("incoming peer request", zap.Any("peers", peers))
 			r.peerRespChan <- peers
 		}
 	}
@@ -133,17 +127,18 @@ func (r *raftStateMachine) hasQuorumAcks() bool {
 }
 
 func (r *raftStateMachine) processMessage(msg raftpb.Message) error {
-	// r.logger.Info(
-	// 	"received raft protocol message",
-	// 	zap.Uint64("term", r.state.Term),
-	// 	zap.Uint64("msgTerm", msg.Term))
 	if msg.Term < r.state.Term {
-		r.logger.Info("ignoring stale msg", zap.String("msg", msg.String()))
+		r.logger.Info(
+			"ignoring stale msg",
+			zap.Uint64("from", msg.From), zap.String("type", msg.Type.String()))
 		return nil
 	}
 	if msg.Term > r.state.Term {
+		r.logger.Info("received msg with higher term", zap.Uint64("msgTerm", msg.Term))
 		r.state.Term = msg.Term
-		r.becomeFollower()
+		if r.state.Role != raftpb.RoleFollower {
+			r.becomeFollower()
+		}
 
 		// proposal may already have been committed, but just in case it wasn't...
 		if r.pendingProposal.isPending() {
@@ -181,7 +176,6 @@ func (r *raftStateMachine) processMessage(msg raftpb.Message) error {
 		msgVoteResp := getVoteResp(msg)
 		r.processVoteResp(msgVoteResp)
 	default:
-		r.logger.Error("unrecognized msg", zap.String("msg", msg.String()))
 		return fmt.Errorf("unrecognized msg type: %s", msg.Type.String())
 	}
 
@@ -189,7 +183,6 @@ func (r *raftStateMachine) processMessage(msg raftpb.Message) error {
 }
 
 func (r *raftStateMachine) processApp(msg msgApp) {
-	r.logger.Info("processing MsgApp")
 	r.state.Leader = msg.from
 	switch r.state.Role {
 	case raftpb.RoleLeader:
@@ -224,7 +217,6 @@ func (r *raftStateMachine) processApp(msg msgApp) {
 }
 
 func (r *raftStateMachine) processAppResp(msg msgAppResp) {
-	r.logger.Info("processing MsgAppResp")
 	switch r.state.Role {
 	case raftpb.RoleFollower:
 		return
@@ -245,6 +237,7 @@ func (r *raftStateMachine) processAppResp(msg msgAppResp) {
 		p.Next = r.lastEntryIndex + 1
 	} else {
 		p.Next--
+		r.logger.Info("decreased next", zap.Uint64("follower", p.ID))
 	}
 
 	quorumMatchIndex := r.quorumMatchIndex()
@@ -262,7 +255,6 @@ func (r *raftStateMachine) processAppResp(msg msgAppResp) {
 }
 
 func (r *raftStateMachine) processPing(msg msgPing) {
-	r.logger.Info("processing MsgPing")
 	if msg.from == r.state.Leader {
 		switch r.state.Role {
 		case raftpb.RoleFollower:
@@ -281,8 +273,10 @@ func (r *raftStateMachine) processPing(msg msgPing) {
 }
 
 func (r *raftStateMachine) processPong(msg msgPong) {
-	r.logger.Info("processing MsgPong")
 	if r.state.Role != raftpb.RoleLeader {
+		r.logger.Info(
+			"ignored MsgPing",
+			zap.Uint64("from", msg.from), zap.String("role", r.state.Role.String()))
 		return
 	}
 
@@ -298,8 +292,7 @@ func (r *raftStateMachine) processPong(msg msgPong) {
 }
 
 func (r *raftStateMachine) processProp(msg msgProp) {
-	r.logger.Info("processing MsgProp")
-	// fail the proposal if not leader
+	// if not leader, let proposer know we're not leader
 	if r.state.Role != raftpb.RoleLeader {
 		resp := buildPropResp(
 			r.state.Term, r.id, msg.from,
@@ -311,6 +304,8 @@ func (r *raftStateMachine) processProp(msg msgProp) {
 		return
 	}
 
+	// If leader, append proposed entry to log. At this point, if ConsistencySerializable, then
+	// proposal is successful. If ConsistencyLinearizable, proposal isn't successful until committed.
 	entry := raftpb.Entry{
 		Index: r.lastEntryIndex + 1,
 		Term:  r.state.Term,
@@ -328,23 +323,23 @@ func (r *raftStateMachine) processProp(msg msgProp) {
 }
 
 func (r *raftStateMachine) processPropResp(msg msgPropResp) {
-	r.logger.Info("processing MsgPropResp")
 	if !r.pendingProposal.isPending() {
 		return
 	}
 
+	// check if the proposal response is the one we're looking for (equal unixNano)
+	// and if the proposal succeeded (index != 0)
 	if msg.unixNano == r.pendingProposal.unixNano && msg.index != 0 {
 		// serializable shortcut
 		if r.consistency == ConsistencySerializable {
 			r.endPendingProposal(nil)
 		}
-	} else {
-		r.endPendingProposal(ErrNotLeader)
+	} else if r.pendingProposal.isPending() {
+		r.endPendingProposal(ErrDroppedProposal)
 	}
 }
 
 func (r *raftStateMachine) processVote(msg msgVote) {
-	r.logger.Info("processing MsgVote")
 	switch r.state.Role {
 	case raftpb.RoleLeader:
 		return
@@ -354,17 +349,20 @@ func (r *raftStateMachine) processVote(msg msgVote) {
 	grantVote := r.state.VotedFor == 0 &&
 		(msg.logTerm > r.state.Term || msg.index >= r.lastEntryIndex)
 	if grantVote {
-		r.state.VotedFor = msg.from
 		resp := buildVoteResp(r.state.Term, r.id, msg.from)
 		select {
 		case r.sendChan <- resp:
+			r.state.VotedFor = msg.from
+			r.logger.Info(
+				"voted for candidate",
+				zap.Uint64("votedFor", r.state.VotedFor), zap.Uint64("term", r.state.Term))
 		default:
 		}
 	}
 }
 
 func (r *raftStateMachine) processVoteResp(msg msgVoteResp) {
-	r.logger.Info("processing MsgVoteResp")
+	r.logger.Info("got vote", zap.Uint64("from", msg.from), zap.Uint64("term", msg.term))
 	r.peers[msg.from].VoteGranted = true
 	voteCount := 0
 	for _, p := range r.peers {
@@ -378,7 +376,6 @@ func (r *raftStateMachine) processVoteResp(msg msgVoteResp) {
 }
 
 func (r *raftStateMachine) propose(req proposalRequest) {
-	r.logger.Info("got proposal", zap.Int64("unixNano", req.unixNano))
 	// if not leader, then proxy proposal request to leader
 	if r.id != r.state.Leader {
 		r.pendingProposal = pendingProposal{unixNano: req.unixNano}
@@ -412,10 +409,6 @@ func (r *raftStateMachine) propose(req proposalRequest) {
 }
 
 func (r *raftStateMachine) read(req readRequest) {
-	r.logger.Info(
-		"got read request",
-		zap.Uint64("readIndex", r.state.Commit),
-		zap.Int64("unixNano", req.unixNano))
 	r.pendingRead = pendingRead{
 		index:    r.state.Commit,
 		unixNano: req.unixNano,
@@ -432,7 +425,7 @@ func (r *raftStateMachine) read(req readRequest) {
 }
 
 func (r *raftStateMachine) becomeFollower() {
-	r.logger.Info("becoming follower")
+	r.logger.Info("becoming follower", zap.Uint64("term", r.state.Term))
 	r.heartbeatC = nil
 	r.state.Role = raftpb.RoleFollower
 	r.state.VotedFor = 0
@@ -468,7 +461,7 @@ func (r *raftStateMachine) becomeCandidate() {
 		select {
 		case r.sendChan <- req:
 		default:
-			r.logger.Info("dropping MsgVote")
+			r.logger.Info("did not send MsgVote", zap.Uint64("to", req.To))
 		}
 	}
 
@@ -508,7 +501,6 @@ func (r *raftStateMachine) becomeLeader() {
 }
 
 func (r *raftStateMachine) broadcastApp() {
-	r.logger.Info("heartbeat")
 	for _, p := range r.peers {
 		if r.id == p.ID {
 			continue
@@ -524,7 +516,7 @@ func (r *raftStateMachine) broadcastApp() {
 		select {
 		case r.sendChan <- req:
 		default:
-			r.logger.Info("dropping MsgApp")
+			r.logger.Info("did not send MsgApp", zap.Uint64("to", req.To))
 		}
 	}
 }
@@ -538,7 +530,7 @@ func (r *raftStateMachine) broadcastPing() {
 		select {
 		case r.sendChan <- ping:
 		default:
-			r.logger.Info("dropping MsgPing")
+			r.logger.Info("did not send MsgPing", zap.Uint64("to", ping.To))
 		}
 	}
 }
@@ -577,14 +569,13 @@ func (r *raftStateMachine) canAckLinearizableRead() bool {
 
 // proposal may already have been committed, but just in case it wasn't...
 func (r *raftStateMachine) endPendingProposal(err error) {
-	r.logger.Info("ending pending proposal", zap.Error(err))
 	result := proposalResponse{
 		err: err,
 	}
 	select {
 	case r.propRespChan <- result:
 	default:
-		r.logger.Info("did not send proposalResponse")
+		r.logger.Info("could not send proposalResponse")
 	}
 	// zero out pending proposal
 	r.pendingProposal = pendingProposal{}
@@ -592,10 +583,6 @@ func (r *raftStateMachine) endPendingProposal(err error) {
 
 // ack (nil error) or cancel (non-nil error) any pending read requests
 func (r *raftStateMachine) endPendingRead(err error) {
-	r.logger.Info(
-		"ending pending read request",
-		zap.Uint64("readIndex", r.pendingRead.index),
-		zap.Error(err))
 	if r.state.Role == raftpb.RoleLeader {
 		result := readResponse{
 			index: r.pendingRead.index,
@@ -604,7 +591,7 @@ func (r *raftStateMachine) endPendingRead(err error) {
 		select {
 		case r.readRespChan <- result:
 		default:
-			r.logger.Info("did not send readResponse")
+			r.logger.Info("could not send readResponse")
 		}
 	}
 	// zero out pending read
@@ -613,10 +600,6 @@ func (r *raftStateMachine) endPendingRead(err error) {
 
 // update commit and alert downstream application state machine
 func (r *raftStateMachine) updateCommit(newCommit uint64) {
-	r.logger.Info(
-		"updating commit",
-		zap.Uint64("oldCommit", r.state.Commit),
-		zap.Uint64("newCommit", newCommit))
 	r.state.Commit = newCommit
 	r.commitChan <- newCommit
 }
@@ -626,23 +609,23 @@ func (r *raftStateMachine) start() error {
 	r.electionTicker.Start()
 	r.logger.Info("starting heartbeat ticker")
 	r.heartbeatTicker.Start()
-	go func() {
-		err := r.run()
-		if err != nil {
-			r.logger.Error("raft run loop errored out", zap.Error(err))
-		}
-		r.stopErrChan <- err
-	}()
+	r.logger.Info("starting raft state machine run loop")
+	go r.run()
 	return nil
 }
 
 func (r *raftStateMachine) stop() error {
-	r.logger.Info("stopping election timeout ticker")
-	r.electionTicker.Stop()
-	r.logger.Info("stopping heartbeat ticker")
-	r.heartbeatTicker.Stop()
+	r.logger.Info("stopping raft state machine run loop...")
 	r.stopChan <- struct{}{}
-	return <-r.stopErrChan
+	err := <-r.stopErrChan
+	r.logger.Info("stopped")
+	r.logger.Info("stopping election timeout ticker...")
+	r.electionTicker.Stop()
+	r.logger.Info("stopped")
+	r.logger.Info("stopping heartbeat ticker...")
+	r.heartbeatTicker.Stop()
+	r.logger.Info("stopped")
+	return err
 }
 
 // newRaftStateMachine constructs a new `raftStateMachine` from `Configuration`.
@@ -718,8 +701,8 @@ func newRaftStateMachine(
 
 		log:                    newLog(),
 		quorumMatchIndexBuffer: make([]uint64, len(c.PeerAddresses)),
-		stopChan:               make(chan struct{}),
-		stopErrChan:            make(chan error),
+		stopChan:               make(chan struct{}, 1),
+		stopErrChan:            make(chan error, 1),
 
 		logger:        c.Logger,
 		sugaredLogger: c.Logger.Sugar(),

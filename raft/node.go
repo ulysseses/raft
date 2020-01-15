@@ -59,10 +59,9 @@ func (n *Node) Peers() map[uint64]Peer {
 
 // propose proposes data to the raft log.
 // ConsistencySerializable: propose blocks until the leader added proposal to log.
-//   * ErrNotLeader is returned when trying to propose to a non-leader.
+//   * ErrDroppedProposal is returned when leader no longer is leader and thus dropped proposal.
 // ConsistencyLinearizable: propose blocks until the quorum has committed the proposal.
 //   * ErrDroppedProposal is returned when leader no longer is leader and thus dropped proposal.
-//   * ErrNotLeader is returned when trying to propose to a non-leader.
 func (n *Node) propose(ctx context.Context, unixNano int64, data []byte) error {
 	n.proposeMu.Lock()
 	done := ctx.Done()
@@ -132,12 +131,11 @@ func (n *Node) runApplication() error {
 
 // Start starts the Raft node.
 func (n *Node) Start() error {
-	var result *multierror.Error
 	if err := n.t.start(); err != nil {
-		result = multierror.Append(result, err)
+		return err
 	}
 	if err := n.r.start(); err != nil {
-		result = multierror.Append(result, err)
+		return err
 	}
 	go func() {
 		err := n.runApplication()
@@ -146,13 +144,15 @@ func (n *Node) Start() error {
 		}
 		n.stopAppErrChan <- err
 	}()
-	return result.ErrorOrNil()
+	return nil
 }
 
 // Stop stops the Raft node.
 func (n *Node) Stop() error {
 	var result *multierror.Error
-	n.r.stop()
+	if err := n.r.stop(); err != nil {
+		result = multierror.Append(result, err)
+	}
 	if err := n.t.stop(); err != nil {
 		result = multierror.Append(result, err)
 	}

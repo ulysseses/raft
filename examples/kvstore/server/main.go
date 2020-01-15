@@ -29,6 +29,7 @@ var (
 		MsgBufferSize:          8,
 		DialTimeout:            time.Second,
 		ConnectionAttemptDelay: time.Second,
+		SendTimeout:            time.Second,
 		GRPCOptions: []raft.GRPCOption{
 			raft.WithGRPCDialOption{Opt: grpc.WithInsecure()},
 		},
@@ -63,6 +64,13 @@ func init() {
 		&config.MsgBufferSize, "msgBufferSize", config.MsgBufferSize,
 		"number of Raft protocol messages allowed to be buffered before the "+
 			"Raft node can process/send them out.")
+	flag.DurationVar(
+		&config.DialTimeout, "dialTimeout", config.DialTimeout, "timeout for dialing to peers")
+	flag.DurationVar(
+		&config.ConnectionAttemptDelay, "connectionAttemptDelay", config.ConnectionAttemptDelay,
+		"duration to wait per connection attempt")
+	flag.DurationVar(
+		&config.SendTimeout, "sendTimeout", config.SendTimeout, "timeout for sending to peers")
 }
 
 func main() {

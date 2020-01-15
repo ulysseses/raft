@@ -39,6 +39,9 @@ type Configuration struct {
 	// ConnectionAttemptDelay is the duration to wait per connection attempt.
 	ConnectionAttemptDelay time.Duration
 
+	// SendTimeout is the timeout for sending to peers.
+	SendTimeout time.Duration
+
 	// GRPCOptions is an optional list of GRPCOptions to apply to configure gRPC.
 	GRPCOptions []GRPCOption
 

@@ -76,6 +76,10 @@ func (t *heartbeatTicker) C() <-chan struct{} {
 
 // Reset: heartbeatTicker implements Ticker
 func (t *heartbeatTicker) Reset() {
+	select {
+	case <-t.cChan:
+	default:
+	}
 	t.resetChan <- struct{}{}
 }
 
@@ -154,6 +158,10 @@ func (t *electionTicker) C() <-chan struct{} {
 
 // Reset: electionTicker implements Ticker
 func (t *electionTicker) Reset() {
+	select {
+	case <-t.cChan:
+	default:
+	}
 	t.resetChan <- struct{}{}
 }
 
