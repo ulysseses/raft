@@ -49,8 +49,11 @@ type Configuration struct {
 	// the ticker.
 	TickerOptions []TickerOption
 
-	// Logger. If nil, a default one is constructed.
+	// Logger.
 	Logger *zap.Logger
+
+	// Debug instructs the logger to emit Debug-level logs.
+	Debug bool
 }
 
 // Consistency is the consistency mode that Raft operations should support.

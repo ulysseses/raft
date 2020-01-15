@@ -25,7 +25,6 @@ var (
 type transportConfiguration struct {
 	id                     uint64
 	peerAddresses          map[uint64]string
-	msgBufferSize          int
 	dialTimeout            time.Duration
 	connectionAttemptDelay time.Duration
 	sendTimeout            time.Duration
@@ -51,13 +50,21 @@ type transport struct {
 
 	logger        *zap.Logger
 	sugaredLogger *zap.SugaredLogger
+	debug         bool
 }
 
-func (t *transport) logMsg(txt string, msg raftpb.Message) {
+func (t *transport) logInfoMsg(txt string, msg raftpb.Message) {
 	// scrub entries
 	msg.Entries = nil
 
 	t.logger.Info(txt, zap.String("msg", msg.String()))
+}
+
+func (t *transport) logDebugMsg(txt string, msg raftpb.Message) {
+	// scrub entries
+	msg.Entries = nil
+
+	t.logger.Debug(txt, zap.String("msg", msg.String()))
 }
 
 // Communicate loops receiving incoming raft protocol messages from the network.
@@ -74,14 +81,17 @@ func (t *transport) Communicate(stream raftpb.RaftProtocol_CommunicateServer) er
 			return err
 		}
 		if msg.From == 0 || msg.To == 0 || msg.From == msg.To {
-			return fmt.Errorf("receiving with bogus recipient/sender! %v", msg.String())
+			return fmt.Errorf("received bogus recipient/sender! %v", msg.String())
 		}
 		select {
 		case <-t.stopChan:
 			return nil
 		case recvChan <- *msg:
+			if t.debug {
+				t.logDebugMsg("received", *msg)
+			}
 		default:
-			t.logMsg("received but dropped", *msg)
+			t.logInfoMsg("received but dropped", *msg)
 		}
 	}
 }
@@ -107,7 +117,7 @@ func (t *transport) sendLoop() {
 				return
 			}
 			if msg.From == 0 || msg.To == 0 || msg.From == msg.To {
-				err := fmt.Errorf("sending with bogus recipient/sender! %v", msg.String())
+				err := fmt.Errorf("sending bogus recipient/sender! %v", msg.String())
 				t.logger.Error("transport sendLoop encountered error", zap.Error(err))
 				t.stopErrChan <- err
 				return
@@ -117,20 +127,25 @@ func (t *transport) sendLoop() {
 			pc.Lock()
 			if pc.closed {
 				pc.Unlock()
-				t.logMsg("peer is offline, so did not send", msg)
+				t.logInfoMsg("peer is offline, so did not send", msg)
 				continue
 			}
 			client := t.peerClients[msg.To].communicateClient
 			select {
 			case t.sendErrChan <- client.Send(&msg):
 			case <-time.After(t.config.sendTimeout):
-				t.logMsg("timed out when sending message", msg)
+				t.logInfoMsg("timed out when sending message", msg)
 			}
 			pc.Unlock()
 
 			select {
 			case err := <-t.sendErrChan:
-				if err == io.EOF {
+				switch err {
+				case nil:
+					if t.debug {
+						t.logDebugMsg("sent", msg)
+					}
+				case io.EOF:
 					pc.Lock()
 					if !pc.closed {
 						pc.connCloser()
@@ -138,12 +153,13 @@ func (t *transport) sendLoop() {
 					pc.closed = true
 					pc.Unlock()
 					go t.attemptConnectionUntilSuccess(pc, t.config.peerAddresses[pc.id])
-				} else if err != nil {
+				default:
 					t.logger.Error("transport sendLoop encountered error", zap.Error(err))
 					t.stopErrChan <- err
 					return
 				}
 			default:
+				// pass: this branch is taken when timed out
 			}
 		}
 	}
@@ -216,11 +232,13 @@ func (t *transport) attemptConnectionUntilSuccess(pc *peerClient, addr string) {
 		if err != nil {
 			// TODO(ulysseses): Implement Cluster change protocol to be more robust
 			// DEBUG instead of ERROR due to verbosity
-			t.logger.Debug(
-				"failed to connect to peer",
-				zap.Int("attempt", attempt),
-				zap.Uint64("peerID", pc.id),
-				zap.Error(err))
+			if t.debug {
+				t.logger.Debug(
+					"failed to connect to peer",
+					zap.Int("attempt", attempt),
+					zap.Uint64("peerID", pc.id),
+					zap.Error(err))
+			}
 			continue
 		}
 		client := raftpb.NewRaftProtocolClient(conn)
@@ -228,11 +246,13 @@ func (t *transport) attemptConnectionUntilSuccess(pc *peerClient, addr string) {
 		if err != nil {
 			// TODO(ulysseses): Implement Cluster change protocol to be more robust
 			// DEBUG instead of ERROR due to verbosity
-			t.logger.Debug(
-				"failed to connect to peer",
-				zap.Int("attempt", attempt),
-				zap.Uint64("peerID", pc.id),
-				zap.Error(err))
+			if t.debug {
+				t.logger.Debug(
+					"failed to connect to peer",
+					zap.Int("attempt", attempt),
+					zap.Uint64("peerID", pc.id),
+					zap.Error(err))
+			}
 			continue
 		}
 		pc.Lock()
@@ -318,7 +338,6 @@ func newTransport(c Configuration) (*transport, error) {
 		config: transportConfiguration{
 			id:                     c.ID,
 			peerAddresses:          c.PeerAddresses,
-			msgBufferSize:          c.MsgBufferSize,
 			dialTimeout:            c.DialTimeout,
 			connectionAttemptDelay: c.ConnectionAttemptDelay,
 			sendTimeout:            c.SendTimeout,
@@ -333,6 +352,7 @@ func newTransport(c Configuration) (*transport, error) {
 		stopErrChan:   make(chan error),
 		logger:        c.Logger,
 		sugaredLogger: c.Logger.Sugar(),
+		debug:         c.Debug,
 	}
 	return &t, nil
 }

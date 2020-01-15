@@ -65,6 +65,7 @@ type raftStateMachine struct {
 
 	logger        *zap.Logger
 	sugaredLogger *zap.SugaredLogger
+	debug         bool
 }
 
 func (r *raftStateMachine) run() {
@@ -128,9 +129,11 @@ func (r *raftStateMachine) hasQuorumAcks() bool {
 
 func (r *raftStateMachine) processMessage(msg raftpb.Message) error {
 	if msg.Term < r.state.Term {
-		r.logger.Info(
-			"ignoring stale msg",
-			zap.Uint64("from", msg.From), zap.String("type", msg.Type.String()))
+		if r.debug {
+			r.logger.Debug(
+				"ignoring stale msg",
+				zap.Uint64("from", msg.From), zap.String("type", msg.Type.String()))
+		}
 		return nil
 	}
 	if msg.Term > r.state.Term {
@@ -569,6 +572,9 @@ func (r *raftStateMachine) canAckLinearizableRead() bool {
 
 // proposal may already have been committed, but just in case it wasn't...
 func (r *raftStateMachine) endPendingProposal(err error) {
+	if r.debug {
+		r.logger.Debug("ending pending proposal", zap.Error(err))
+	}
 	result := proposalResponse{
 		err: err,
 	}
@@ -583,6 +589,9 @@ func (r *raftStateMachine) endPendingProposal(err error) {
 
 // ack (nil error) or cancel (non-nil error) any pending read requests
 func (r *raftStateMachine) endPendingRead(err error) {
+	if r.debug {
+		r.logger.Debug("ending pending read", zap.Error(err))
+	}
 	if r.state.Role == raftpb.RoleLeader {
 		result := readResponse{
 			index: r.pendingRead.index,
@@ -600,6 +609,11 @@ func (r *raftStateMachine) endPendingRead(err error) {
 
 // update commit and alert downstream application state machine
 func (r *raftStateMachine) updateCommit(newCommit uint64) {
+	if r.debug {
+		r.logger.Debug(
+			"updating commit",
+			zap.Uint64("oldCommit", r.state.Commit), zap.Uint64("newCommit", newCommit))
+	}
 	r.state.Commit = newCommit
 	r.commitChan <- newCommit
 }
@@ -706,6 +720,7 @@ func newRaftStateMachine(
 
 		logger:        c.Logger,
 		sugaredLogger: c.Logger.Sugar(),
+		debug:         c.Debug,
 	}
 	for id := range c.PeerAddresses {
 		r.peers[id] = &Peer{ID: id}

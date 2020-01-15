@@ -57,7 +57,6 @@ func Test_3NodeStartup(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	logCfg := zap.NewProductionConfig()
-	// logCfg.Level.SetLevel(zap.FatalLevel)
 	logger, err := logCfg.Build()
 	if err != nil {
 		t.Fatal(err)
