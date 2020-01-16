@@ -6,82 +6,48 @@ import (
 	"os"
 	"runtime"
 	"runtime/pprof"
-	"time"
 
 	"github.com/ulysseses/raft/raft"
 	"github.com/valyala/fasthttp"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
 )
 
 var (
 	addr       = ":3001"
 	cpuProfile = ""
 	memProfile = ""
-	config     = raft.Configuration{
-		ID:                     1,
-		PeerAddresses:          map[uint64]string{1: "tcp://localhost:8081"},
-		TickPeriod:             time.Second,
-		MinElectionTicks:       5,
-		MaxElectionTicks:       15,
-		HeartbeatTicks:         2,
-		Consistency:            raft.ConsistencySerializable,
-		MsgBufferSize:          8,
-		DialTimeout:            time.Second,
-		ConnectionAttemptDelay: time.Second,
-		SendTimeout:            time.Second,
-		GRPCOptions: []raft.GRPCOption{
-			raft.WithGRPCDialOption{Opt: grpc.WithInsecure()},
-		},
-	}
+
+	id            = uint64(1)
+	peerAddresses = map[uint64]string{1: "tcp://localhost:8081"}
+	consistency   = raft.ConsistencyLinearizable
 )
 
 func init() {
 	flag.StringVar(&addr, "addr", addr, "address for http kv store")
 	flag.StringVar(&cpuProfile, "cpuProfile", cpuProfile, "write cpu profile to a file")
 	flag.StringVar(&memProfile, "memProfile", memProfile, "write memory profile to a file")
-	flag.Uint64Var(&config.ID, "id", config.ID, "Raft node ID")
+
+	flag.Uint64Var(&id, "id", id, "Raft node ID")
 	flag.Var(
-		&mapValue{m: &config.PeerAddresses},
+		&mapValue{m: &peerAddresses},
 		"peerAddresses",
 		"peer addresses specified as a |-separated string of key-value pairs, "+
 			"which themselves are separated by commas. E.g. "+
 			"\"1,tcp://localhost:8081|2,tcp://localhost:8082|3,tcp://localhost:8083\"")
-	flag.DurationVar(&config.TickPeriod, "tickPeriod", config.TickPeriod, "tick period")
-	flag.UintVar(
-		&config.MinElectionTicks, "minElectionTicks", config.MinElectionTicks,
-		"minimum number of tick periods before an election timeout should fire")
-	flag.UintVar(
-		&config.MaxElectionTicks, "maxElectionTicks", config.MaxElectionTicks,
-		"maximum number of tick periods before an election timeout should fire")
-	flag.UintVar(
-		&config.HeartbeatTicks, "heartbeatTicks", config.HeartbeatTicks,
-		"number of tick periods before a heartbeat should fire")
 	flag.Var(
-		&consistencyValue{c: &config.Consistency}, "consistency",
+		&consistencyValue{c: &consistency}, "consistency",
 		"consistency level: serializable or linearizable")
-	flag.IntVar(
-		&config.MsgBufferSize, "msgBufferSize", config.MsgBufferSize,
-		"number of Raft protocol messages allowed to be buffered before the "+
-			"Raft node can process/send them out.")
-	flag.DurationVar(
-		&config.DialTimeout, "dialTimeout", config.DialTimeout, "timeout for dialing to peers")
-	flag.DurationVar(
-		&config.ConnectionAttemptDelay, "connectionAttemptDelay", config.ConnectionAttemptDelay,
-		"duration to wait per connection attempt")
-	flag.DurationVar(
-		&config.SendTimeout, "sendTimeout", config.SendTimeout, "timeout for sending to peers")
 }
 
 func main() {
 	flag.Parse()
 
-	logger, err := zap.NewProduction()
+	config, err := raft.BuildSensibleConfiguration(id, peerAddresses, consistency, nil)
 	if err != nil {
 		fmt.Print(err)
 		return
 	}
-	sugaredLogger := logger.Sugar()
+	logger := config.Logger
 
 	if cpuProfile != "" {
 		logger.Info("writing cpu profile", zap.String("cpuProfile", cpuProfile))
@@ -110,21 +76,14 @@ func main() {
 		}()
 	}
 
-	config.Logger = logger
-
 	kvStore := newKVStore()
 	node, err := raft.NewNode(config, kvStore)
 	if err != nil {
 		logger.Fatal("could not create Raft node", zap.Error(err))
 	}
 	if err := node.Start(); err != nil {
-		sugaredLogger.Error(err)
+		logger.Fatal("did not start node successfully", zap.Error(err))
 	}
-	defer func() {
-		if err := node.Stop(); err != nil {
-			sugaredLogger.Error(err)
-		}
-	}()
 	kvStore.node = node
 	httpKVAPI := &httpKVAPI{
 		kvStore:       kvStore,

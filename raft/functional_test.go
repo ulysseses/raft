@@ -34,7 +34,11 @@ func createSocket(dir, testName string, id uint64) string {
 	return fmt.Sprintf("unix://%s%d.sock", filepath.Join(dir, testName), id)
 }
 
-func createConfigs(tmpl Configuration, dir, testName string, ids ...uint64) map[uint64]Configuration {
+func createConfigs(
+	tmpl Configuration,
+	dir, testName string,
+	ids ...uint64,
+) (map[uint64]Configuration, error) {
 	logger := tmpl.Logger
 
 	configs := map[uint64]Configuration{}
@@ -47,9 +51,12 @@ func createConfigs(tmpl Configuration, dir, testName string, ids ...uint64) map[
 		specificLogger := logger.With(zap.Uint64("id", id))
 		tmpl.ID = id
 		tmpl.Logger = specificLogger
+		if err := tmpl.Verify(); err != nil {
+			return nil, err
+		}
 		configs[id] = tmpl
 	}
-	return configs
+	return configs, nil
 }
 
 func Test_3NodeStartup(t *testing.T) {
@@ -77,7 +84,10 @@ func Test_3NodeStartup(t *testing.T) {
 		},
 		Logger: logger,
 	}
-	configs := createConfigs(tmplConfig, tmpDir, t.Name(), 1, 2, 3)
+	configs, err := createConfigs(tmplConfig, tmpDir, t.Name(), 1, 2, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// hack: use 1 fake application for all three nodes
 	app := &fakeApplication{}

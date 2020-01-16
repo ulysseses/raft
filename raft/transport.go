@@ -127,7 +127,9 @@ func (t *transport) sendLoop() {
 			pc.Lock()
 			if pc.closed {
 				pc.Unlock()
-				t.logInfoMsg("peer is offline, so did not send", msg)
+				if t.debug {
+					t.logDebugMsg("peer is offline, so did not send", msg)
+				}
 				continue
 			}
 			client := t.peerClients[msg.To].communicateClient
@@ -142,6 +144,8 @@ func (t *transport) sendLoop() {
 			case err := <-t.sendErrChan:
 				switch err {
 				case nil:
+					// TODO(ulysseses): Implement Cluster change protocol to be more robust
+					// DEBUG instead of ERROR due to verbosity
 					if t.debug {
 						t.logDebugMsg("sent", msg)
 					}
