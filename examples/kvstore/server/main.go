@@ -6,10 +6,12 @@ import (
 	"os"
 	"runtime"
 	"runtime/pprof"
+	"time"
 
 	"github.com/ulysseses/raft/raft"
 	"github.com/valyala/fasthttp"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 var (
@@ -17,9 +19,12 @@ var (
 	cpuProfile = ""
 	memProfile = ""
 
-	id            = uint64(1)
-	peerAddresses = map[uint64]string{1: "tcp://localhost:8081"}
-	consistency   = raft.ConsistencyLinearizable
+	id             = uint64(1)
+	peerAddresses  = map[uint64]string{1: "tcp://localhost:8081"}
+	consistency    = raft.ConsistencyLinearizable
+	debug          = false
+	readTimeout    = time.Second
+	proposeTimeout = time.Second
 )
 
 func init() {
@@ -37,17 +42,33 @@ func init() {
 	flag.Var(
 		&consistencyValue{c: &consistency}, "consistency",
 		"consistency level: serializable or linearizable")
+	flag.BoolVar(&debug, "debug", debug, "enable debug logs")
+	flag.DurationVar(
+		&readTimeout, "readTimeout", readTimeout,
+		"timeout for read requests to raft cluster")
+	flag.DurationVar(
+		&proposeTimeout, "proposeTimeout", proposeTimeout,
+		"timeout for proposals to raft cluster")
 }
 
 func main() {
 	flag.Parse()
 
-	config, err := raft.BuildSensibleConfiguration(id, peerAddresses, consistency, nil)
+	loggerCfg := zap.NewProductionConfig()
+	if debug {
+		loggerCfg.Level.SetLevel(zapcore.DebugLevel)
+	}
+	logger, err := loggerCfg.Build()
 	if err != nil {
 		fmt.Print(err)
 		return
 	}
-	logger := config.Logger
+
+	config, err := raft.BuildSensibleConfiguration(id, peerAddresses, consistency, logger)
+	if err != nil {
+		logger.Fatal("could not build sensible configuration", zap.Error(err))
+	}
+	config.Debug = debug
 
 	if cpuProfile != "" {
 		logger.Info("writing cpu profile", zap.String("cpuProfile", cpuProfile))
@@ -86,9 +107,11 @@ func main() {
 	}
 	kvStore.node = node
 	httpKVAPI := &httpKVAPI{
-		kvStore:       kvStore,
-		logger:        logger,
-		sugaredLogger: logger.Sugar(),
+		kvStore:        kvStore,
+		logger:         logger,
+		sugaredLogger:  logger.Sugar(),
+		readTimeout:    readTimeout,
+		proposeTimeout: proposeTimeout,
 	}
 	logger.Info("starting http kv store backed by raft", zap.String("addr", addr))
 	if err := fasthttp.ListenAndServe(addr, httpKVAPI.Route); err != nil {

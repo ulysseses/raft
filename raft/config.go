@@ -49,7 +49,7 @@ type Configuration struct {
 	// Logger.
 	Logger *zap.Logger
 
-	// Debug instructs the logger to emit Debug-level logs.
+	// Debug.
 	Debug bool
 }
 

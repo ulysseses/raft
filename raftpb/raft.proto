@@ -9,41 +9,45 @@ option (gogoproto.goproto_enum_prefix_all) = false;
 
 message Message {
   // Fields in all Messages
-  optional uint64      term     = 1  [(gogoproto.nullable) = false];
-  optional uint64      from     = 2  [(gogoproto.nullable) = false];
-  optional uint64      to       = 3  [(gogoproto.nullable) = false];
-  optional MessageType type     = 4  [(gogoproto.nullable) = false];
-
-  optional uint64      index    = 5  [(gogoproto.nullable) = false];
-  optional uint64      logTerm  = 6  [(gogoproto.nullable) = false];
-  optional uint64      commit   = 7  [(gogoproto.nullable) = false];
-  optional int64       unixNano = 8  [(gogoproto.nullable) = false];
-  repeated Entry       entries  = 9  [(gogoproto.nullable) = false];
+  optional uint64      term     = 1   [(gogoproto.nullable) = false];
+  optional uint64      from     = 2   [(gogoproto.nullable) = false];
+  optional uint64      to       = 3   [(gogoproto.nullable) = false];
+  optional MessageType type     = 4   [(gogoproto.nullable) = false];
+  optional uint64      index    = 5   [(gogoproto.nullable) = false];
+  optional uint64      logTerm  = 6   [(gogoproto.nullable) = false];
+  optional uint64      commit   = 7   [(gogoproto.nullable) = false];
+  optional int64       unixNano = 8   [(gogoproto.nullable) = false];
+  optional uint64      proxy    = 9   [(gogoproto.nullable) = false];
+  repeated Entry       entries  = 10  [(gogoproto.nullable) = false];
 }
 
 enum MessageType {
   MsgUnknown  = 0;
   
   // MsgApp Fields
-  // * commit:  leader's commit
-  // * entries: entries to append
-  // * logTerm: previous entry term
-  // * index:   previous entry index
+  // * commit:   leader's commit
+  // * entries:  entries to append, ignored if there is read request context
+  // * logTerm:  previous entry term
+  // * index:    previous entry index
+  // * unixNano: read request context, otherwise 0 if none
+  // * proxy:    read request context, otherwise 0 if none
   MsgApp      = 1;
 
   // MsgAppResp Fields
-  // * index:   index of the largest match index, 0 if unsuccessful
+  // * index:    index of the largest match index,
+  //             0 if unsuccessful or responding to read request
+  // * unixNano: read request context, otherwise 0 if none
+  // * proxy:    read request context, otherwise 0 if none
   MsgAppResp  = 2;
 
-  // MsgPing Fields
-  // * unixNano: context associated with a read request
-  // * index: requested read index
-  MsgPing     = 3;
-
-  // MsgPong Fields
-  // * unixNano: context associated with a read request
-  // * index: requested read index
-  MsgPong     = 4;
+  // MsgRead Fields
+  // * unixNano: read request context
+  MsgRead     = 3;
+  
+  // MsgReadResp Fields
+  // * unixNano: read request context
+  // * index:    read index
+  MsgReadResp = 4;
 
   // MsgProp Fields
   // * unixNano: context associated with a proposal request
@@ -73,11 +77,13 @@ message Entry {
 }
 
 message State {
-  optional Role   role     = 1  [(gogoproto.nullable) = false];
-  optional uint64 term     = 2  [(gogoproto.nullable) = false];
-  optional uint64 leader   = 3  [(gogoproto.nullable) = false];
-  optional uint64 commit   = 4  [(gogoproto.nullable) = false];
-  optional uint64 votedFor = 5  [(gogoproto.nullable) = false];
+  optional Role   role      = 1  [(gogoproto.nullable) = false];
+  optional uint64 term      = 2  [(gogoproto.nullable) = false];
+  optional uint64 leader    = 3  [(gogoproto.nullable) = false];
+  optional uint64 commit    = 4  [(gogoproto.nullable) = false];
+  optional uint64 votedFor  = 5  [(gogoproto.nullable) = false];
+  optional uint64 lastIndex = 6  [(gogoproto.nullable) = false];
+  optional uint64 logTerm   = 7  [(gogoproto.nullable) = false];
 }
 
 enum Role {

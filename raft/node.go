@@ -58,10 +58,6 @@ func (n *Node) Peers() map[uint64]Peer {
 }
 
 // propose proposes data to the raft log.
-// ConsistencySerializable: propose blocks until the leader added proposal to log.
-//   * ErrDroppedProposal is returned when leader no longer is leader and thus dropped proposal.
-// ConsistencyLinearizable: propose blocks until the quorum has committed the proposal.
-//   * ErrDroppedProposal is returned when leader no longer is leader and thus dropped proposal.
 func (n *Node) propose(ctx context.Context, unixNano int64, data []byte) error {
 	n.proposeMu.Lock()
 	done := ctx.Done()
@@ -73,9 +69,9 @@ func (n *Node) propose(ctx context.Context, unixNano int64, data []byte) error {
 	}
 
 	select {
-	case result := <-n.r.propRespChan:
+	case _ = <-n.r.propRespChan:
 		n.proposeMu.Unlock()
-		return result.err
+		return nil
 	case <-done:
 		n.proposeMu.Unlock()
 		return ctx.Err()
@@ -101,7 +97,7 @@ func (n *Node) read(ctx context.Context, unixNano int64) (uint64, error) {
 	select {
 	case readResult := <-n.r.readRespChan:
 		n.readMu.Unlock()
-		return readResult.index, readResult.err
+		return readResult.index, nil
 	case <-done:
 		n.readMu.Unlock()
 		return 0, ctx.Err()

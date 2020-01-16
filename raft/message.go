@@ -2,8 +2,6 @@ package raft
 
 import (
 	"github.com/ulysseses/raft/raftpb"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 )
 
 // MsgApp
@@ -12,155 +10,122 @@ func buildApp(
 	commit uint64,
 	entries []raftpb.Entry,
 	index, logTerm uint64,
+	unixNano int64,
+	proxy uint64,
 ) raftpb.Message {
 	return raftpb.Message{
-		Term:    term,
-		From:    from,
-		To:      to,
-		Type:    raftpb.MsgApp,
-		Commit:  commit,
-		Entries: entries,
-		Index:   index,
-		LogTerm: logTerm,
-	}
-}
-
-func msgAppZapFields(msg raftpb.Message) []zapcore.Field {
-	return []zapcore.Field{
-		zap.String("type", msg.Type.String()),
-		zap.Uint64("term", msg.Term),
-		zap.Uint64("from", msg.From),
-		zap.Uint64("to", msg.To),
-		zap.Uint64("commit", msg.Commit),
-		zap.Uint64("index", msg.Index),
-		zap.Uint64("logTerm", msg.LogTerm),
+		Term:     term,
+		From:     from,
+		To:       to,
+		Type:     raftpb.MsgApp,
+		Commit:   commit,
+		Entries:  entries,
+		Index:    index,
+		LogTerm:  logTerm,
+		UnixNano: unixNano,
+		Proxy:    proxy,
 	}
 }
 
 type msgApp struct {
-	term    uint64
-	from    uint64
-	to      uint64
-	commit  uint64
-	index   uint64
-	logTerm uint64
-	entries []raftpb.Entry
+	term     uint64
+	from     uint64
+	to       uint64
+	commit   uint64
+	index    uint64
+	logTerm  uint64
+	entries  []raftpb.Entry
+	unixNano int64
+	proxy    uint64
 }
 
 func getApp(msg raftpb.Message) msgApp {
 	return msgApp{
-		term:    msg.Term,
-		from:    msg.From,
-		to:      msg.To,
-		commit:  msg.Commit,
-		index:   msg.Index,
-		logTerm: msg.LogTerm,
-		entries: msg.Entries,
+		term:     msg.Term,
+		from:     msg.From,
+		to:       msg.To,
+		commit:   msg.Commit,
+		index:    msg.Index,
+		logTerm:  msg.LogTerm,
+		entries:  msg.Entries,
+		unixNano: msg.UnixNano,
+		proxy:    msg.Proxy,
 	}
 }
 
 // MsgAppResp
-func buildAppResp(term, from, to uint64, index uint64) raftpb.Message {
+func buildAppResp(term, from, to uint64, index uint64, unixNano int64, proxy uint64) raftpb.Message {
 	return raftpb.Message{
-		Term:  term,
-		From:  from,
-		To:    to,
-		Type:  raftpb.MsgAppResp,
-		Index: index,
-	}
-}
-
-func msgAppRespZapFields(msg raftpb.Message) []zapcore.Field {
-	return []zapcore.Field{
-		zap.String("type", msg.Type.String()),
-		zap.Uint64("term", msg.Term),
-		zap.Uint64("from", msg.From),
-		zap.Uint64("to", msg.To),
-		zap.Uint64("index", msg.Index),
+		Term:     term,
+		From:     from,
+		To:       to,
+		Type:     raftpb.MsgAppResp,
+		Index:    index,
+		UnixNano: unixNano,
+		Proxy:    proxy,
 	}
 }
 
 type msgAppResp struct {
-	term  uint64
-	from  uint64
-	to    uint64
-	index uint64
+	term     uint64
+	from     uint64
+	to       uint64
+	index    uint64
+	unixNano int64
+	proxy    uint64
 }
 
 func getAppResp(msg raftpb.Message) msgAppResp {
 	return msgAppResp{
-		term:  msg.Term,
-		from:  msg.From,
-		to:    msg.To,
-		index: msg.Index,
+		term:     msg.Term,
+		from:     msg.From,
+		to:       msg.To,
+		index:    msg.Index,
+		unixNano: msg.UnixNano,
+		proxy:    msg.Proxy,
 	}
 }
 
-// MsgPing
-func buildPing(term, from, to uint64, unixNano int64, index uint64) raftpb.Message {
+// MsgRead
+func buildRead(term, from, to uint64, unixNano int64) raftpb.Message {
 	return raftpb.Message{
 		Term:     term,
 		From:     from,
 		To:       to,
-		Type:     raftpb.MsgPing,
+		Type:     raftpb.MsgRead,
 		UnixNano: unixNano,
-		Index:    index,
 	}
 }
 
-func msgPingZapFields(msg raftpb.Message) []zapcore.Field {
-	return []zapcore.Field{
-		zap.String("type", msg.Type.String()),
-		zap.Uint64("term", msg.Term),
-		zap.Uint64("from", msg.From),
-		zap.Uint64("to", msg.To),
-		zap.Int64("unixNano", msg.UnixNano),
-		zap.Uint64("index", msg.Index),
-	}
-}
-
-type msgPing struct {
+type msgRead struct {
 	term     uint64
 	from     uint64
 	to       uint64
 	unixNano int64
-	index    uint64
 }
 
-func getPing(msg raftpb.Message) msgPing {
-	return msgPing{
+func getRead(msg raftpb.Message) msgRead {
+	return msgRead{
 		term:     msg.Term,
 		from:     msg.From,
 		to:       msg.To,
 		unixNano: msg.UnixNano,
-		index:    msg.Index,
 	}
 }
 
-// MsgPong
-func buildPong(term, from, to uint64, unixNano int64, index uint64) raftpb.Message {
+// MsgReadResp
+func buildReadResp(term, from, to uint64, unixNano int64, index uint64) raftpb.Message {
 	return raftpb.Message{
 		Term:     term,
 		From:     from,
 		To:       to,
-		Type:     raftpb.MsgPong,
+		Type:     raftpb.MsgReadResp,
 		UnixNano: unixNano,
 		Index:    index,
 	}
 }
 
-func msgPongZapFields(msg raftpb.Message) []zapcore.Field {
-	return []zapcore.Field{
-		zap.String("type", msg.Type.String()),
-		zap.Uint64("term", msg.Term),
-		zap.Uint64("from", msg.From),
-		zap.Uint64("to", msg.To),
-		zap.Int64("unixNano", msg.UnixNano),
-		zap.Uint64("index", msg.Index),
-	}
-}
-
-type msgPong struct {
+type msgReadResp struct {
 	term     uint64
 	from     uint64
 	to       uint64
@@ -168,8 +133,8 @@ type msgPong struct {
 	index    uint64
 }
 
-func getPong(msg raftpb.Message) msgPong {
-	return msgPong{
+func getReadResp(msg raftpb.Message) msgReadResp {
+	return msgReadResp{
 		term:     msg.Term,
 		from:     msg.From,
 		to:       msg.To,
@@ -184,18 +149,9 @@ func buildProp(term, from, to uint64, unixNano int64, data []byte) raftpb.Messag
 		Term:     term,
 		From:     from,
 		To:       to,
+		Type:     raftpb.MsgProp,
 		UnixNano: unixNano,
 		Entries:  []raftpb.Entry{raftpb.Entry{Data: data}},
-	}
-}
-
-func msgPropZapFields(msg raftpb.Message) []zapcore.Field {
-	return []zapcore.Field{
-		zap.String("type", msg.Type.String()),
-		zap.Uint64("term", msg.Term),
-		zap.Uint64("from", msg.From),
-		zap.Uint64("to", msg.To),
-		zap.Int64("unixNano", msg.UnixNano),
 	}
 }
 
@@ -223,22 +179,10 @@ func buildPropResp(term, from, to uint64, unixNano int64, index, logTerm uint64)
 		Term:     term,
 		From:     from,
 		To:       to,
-		Type:     raftpb.MsgProp,
+		Type:     raftpb.MsgPropResp,
 		UnixNano: unixNano,
 		Index:    index,
 		LogTerm:  logTerm,
-	}
-}
-
-func msgPropRespZapFields(msg raftpb.Message) []zapcore.Field {
-	return []zapcore.Field{
-		zap.String("type", msg.Type.String()),
-		zap.Uint64("term", msg.Term),
-		zap.Uint64("from", msg.From),
-		zap.Uint64("to", msg.To),
-		zap.Int64("unixNano", msg.UnixNano),
-		zap.Uint64("index", msg.Index),
-		zap.Uint64("logTerm", msg.LogTerm),
 	}
 }
 
@@ -274,17 +218,6 @@ func buildVote(term, from, to uint64, index, logTerm uint64) raftpb.Message {
 	}
 }
 
-func msgVoteZapFields(msg raftpb.Message) []zapcore.Field {
-	return []zapcore.Field{
-		zap.String("type", msg.Type.String()),
-		zap.Uint64("term", msg.Term),
-		zap.Uint64("from", msg.From),
-		zap.Uint64("to", msg.To),
-		zap.Uint64("index", msg.Index),
-		zap.Uint64("logTerm", msg.LogTerm),
-	}
-}
-
 type msgVote struct {
 	term    uint64
 	from    uint64
@@ -310,15 +243,6 @@ func buildVoteResp(term, from, to uint64) raftpb.Message {
 		From: from,
 		To:   to,
 		Type: raftpb.MsgVoteResp,
-	}
-}
-
-func msgVoteRespZapFields(msg raftpb.Message) []zapcore.Field {
-	return []zapcore.Field{
-		zap.String("type", msg.Type.String()),
-		zap.Uint64("term", msg.Term),
-		zap.Uint64("from", msg.From),
-		zap.Uint64("to", msg.To),
 	}
 }
 

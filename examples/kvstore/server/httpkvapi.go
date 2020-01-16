@@ -4,23 +4,17 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/valyala/fasthttp"
 	"go.uber.org/zap"
 )
 
-func defaultSetContext() context.Context {
-	return context.Background()
-}
-
-func defaultGetContext() context.Context {
-	return context.Background()
-}
-
 type httpKVAPI struct {
-	kvStore       *kvStore
-	logger        *zap.Logger
-	sugaredLogger *zap.SugaredLogger
+	kvStore                     *kvStore
+	logger                      *zap.Logger
+	sugaredLogger               *zap.SugaredLogger
+	readTimeout, proposeTimeout time.Duration
 }
 
 // Route routes to the correct FastHTTP handler
@@ -51,29 +45,33 @@ func (h *httpKVAPI) Route(ctx *fasthttp.RequestCtx) {
 	ctx.Error("Method not allowed", http.StatusMethodNotAllowed)
 }
 
-func (h *httpKVAPI) handleSet(ctx *fasthttp.RequestCtx) {
-	queryArgs := ctx.QueryArgs()
+func (h *httpKVAPI) handleSet(fctx *fasthttp.RequestCtx) {
+	queryArgs := fctx.QueryArgs()
 	k := queryArgs.Peek("k")
 	v := queryArgs.Peek("v")
-	err := h.kvStore.set(defaultSetContext(), string(k), string(v))
+	ctx, cancel := context.WithTimeout(context.Background(), h.proposeTimeout)
+	err := h.kvStore.set(ctx, string(k), string(v))
+	cancel()
 	if err != nil {
 		h.logger.Error("", zap.Error(err))
 	}
 }
 
-func (h *httpKVAPI) handleGet(ctx *fasthttp.RequestCtx) {
-	k := string(ctx.QueryArgs().Peek("k"))
-	v, ok, err := h.kvStore.get(defaultGetContext(), k)
+func (h *httpKVAPI) handleGet(fctx *fasthttp.RequestCtx) {
+	k := string(fctx.QueryArgs().Peek("k"))
+	ctx, cancel := context.WithTimeout(context.Background(), h.proposeTimeout)
+	v, ok, err := h.kvStore.get(ctx, k)
+	cancel()
 	if err != nil {
 		h.logger.Error("", zap.Error(err))
-		ctx.Error(err.Error(), http.StatusInternalServerError)
+		fctx.Error(err.Error(), http.StatusInternalServerError)
 		return
 	}
 	h.logger.Info("", zap.String("k", k), zap.String("v", v), zap.Bool("ok", ok))
 	if ok {
-		ctx.WriteString(v)
+		fctx.WriteString(v)
 	} else {
-		ctx.Error("Failed to GET", http.StatusNotFound)
+		fctx.Error("Failed to GET", http.StatusNotFound)
 	}
 }
 

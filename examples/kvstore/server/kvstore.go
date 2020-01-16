@@ -19,8 +19,9 @@ type kvStore struct {
 
 // set sets a key value pair.
 func (kvStore *kvStore) set(ctx context.Context, k, v string) error {
-	var data []byte
-	if _, err := (&kvpb.KV{K: k, V: v}).MarshalTo(data); err != nil {
+	kv := kvpb.KV{K: k, V: v}
+	data, err := kv.Marshal()
+	if err != nil {
 		return err
 	}
 	return kvStore.node.Propose(ctx, data)
