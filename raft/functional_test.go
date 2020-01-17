@@ -22,12 +22,8 @@ func (app *fakeApplication) Apply(entries []raftpb.Entry) error {
 }
 
 // remember to os.RemoveAll(tmpDir)
-func createTmpDir(t *testing.T) string {
-	tmpDir, err := ioutil.TempDir("", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return tmpDir
+func createTmpDir() (string, error) {
+	return ioutil.TempDir("", "")
 }
 
 func createSocket(dir, testName string, id uint64) string {
@@ -59,8 +55,82 @@ func createConfigs(
 	return configs, nil
 }
 
+func BenchmarkTransport(b *testing.B) {
+	unusedConsistency := ConsistencySerializable
+
+	// Setup logger
+	loggerCfg := zap.NewProductionConfig()
+	// loggerCfg.Level.SetLevel(zapcore.DebugLevel)
+	logger, err := loggerCfg.Build()
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	// Spin up three nodes
+	tmpDir, err := createTmpDir()
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	tmplConfig, err := BuildSensibleConfiguration(1, map[uint64]string{1: ""}, unusedConsistency, logger)
+	if err != nil {
+		b.Fatal(err)
+	}
+	tmplConfig.MsgBufferSize = 100
+	configs, err := createConfigs(tmplConfig, tmpDir, b.Name(), 1, 2)
+	if err != nil {
+		b.Fatal(err)
+	}
+	transports := map[uint64]*transport{}
+	for _, config := range configs {
+		tr, err := newTransport(config)
+		if err != nil {
+			b.Fatal(err)
+		}
+		transports[config.ID] = tr
+	}
+	done := make(chan error)
+	for _, tr := range transports {
+		go func(tr *transport) {
+			done <- tr.start()
+		}(tr)
+	}
+	for i := uint64(1); i <= 2; i++ {
+		<-done
+	}
+	close(done)
+
+	// Start the benchmark
+	tr1 := transports[1]
+	tr2 := transports[2]
+	msgIn := raftpb.Message{
+		From: 1,
+		To:   2,
+	}
+	var msgOut raftpb.Message
+	b.SetBytes(int64(2 * msgIn.Size()))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// latency: ~21us per send-then-receive op
+		// throughput: 95000 messages
+		tr1.sendChan <- msgIn
+		msgOut = <-tr2.recvChan
+	}
+	b.StopTimer()
+	b.Log(msgIn.Size())
+	b.Log(msgOut)
+
+	// cleanup
+	for _, tr := range transports {
+		_ = tr.stop()
+	}
+}
+
 func Test_3NodeStartup(t *testing.T) {
-	tmpDir := createTmpDir(t)
+	tmpDir, err := createTmpDir()
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer os.RemoveAll(tmpDir)
 
 	logCfg := zap.NewProductionConfig()

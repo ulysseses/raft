@@ -110,7 +110,7 @@ func BuildSensibleConfiguration(
 		MinElectionTicks:       10,
 		MaxElectionTicks:       20,
 		Consistency:            consistency,
-		MsgBufferSize:          (len(peerAddresses) - 1) * 3,
+		MsgBufferSize:          (len(peerAddresses)-1)*3 + 2,
 		DialTimeout:            100 * time.Millisecond,
 		ConnectionAttemptDelay: 100 * time.Millisecond,
 		SendTimeout:            100 * time.Millisecond,
