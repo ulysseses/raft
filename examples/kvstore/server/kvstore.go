@@ -42,12 +42,15 @@ func (kvStore *kvStore) get(ctx context.Context, k string) (v string, ok bool, e
 // Apply implements raft.Application for kvStore
 func (kvStore *kvStore) Apply(entries []raftpb.Entry) error {
 	var kv kvpb.KV
+	kvStore.Lock()
 	for _, entry := range entries {
 		if err := kv.Unmarshal(entry.Data); err != nil {
+			kvStore.Unlock()
 			return err
 		}
 		kvStore.store[kv.K] = kv.V
 	}
+	kvStore.Unlock()
 	return nil
 }
 

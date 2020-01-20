@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"encoding/json"
 	"net/http"
 	"time"
 
@@ -34,9 +34,9 @@ func (h *httpKVAPI) Route(ctx *fasthttp.RequestCtx) {
 			h.handleState(ctx)
 			return
 		}
-	case "/peers":
+	case "/members":
 		if ctx.IsGet() {
-			h.handlePeers(ctx)
+			h.handleMembers(ctx)
 			return
 		}
 	default:
@@ -77,16 +77,27 @@ func (h *httpKVAPI) handleGet(fctx *fasthttp.RequestCtx) {
 
 func (h *httpKVAPI) handleState(ctx *fasthttp.RequestCtx) {
 	state := h.kvStore.node.State()
-	stateStr := state.String()
-	h.logger.Info("", zap.String("state", stateStr))
-	ctx.WriteString(stateStr)
+	if b, err := json.Marshal(state); err == nil {
+		ctx.Write(b)
+	} else {
+		h.logger.Error(
+			"failed to marshal state",
+			zap.Object("state", state), zap.Error(err))
+		ctx.Error("Failed to GET", http.StatusInternalServerError)
+	}
 }
 
-func (h *httpKVAPI) handlePeers(ctx *fasthttp.RequestCtx) {
-	peers := h.kvStore.node.Peers()
-	peersStr := fmt.Sprintf("%v", peers)
-	h.logger.Info("", zap.String("peers", peersStr))
-	ctx.WriteString(peersStr)
+func (h *httpKVAPI) handleMembers(ctx *fasthttp.RequestCtx) {
+	members := h.kvStore.node.Members()
+	if b, err := json.Marshal(members); err == nil {
+		ctx.Write(b)
+	} else {
+		h.logger.Error(
+			"failed to marshal members",
+			zap.Reflect("members", members), zap.Error(err),
+		)
+		ctx.Error("Failed to GET", http.StatusInternalServerError)
+	}
 }
 
 func (h *httpKVAPI) logReq(ctx *fasthttp.RequestCtx) {

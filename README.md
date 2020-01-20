@@ -41,11 +41,11 @@ curl -XPUT "http://localhost:3001/store?k=hi&v=bye"
 curl -XGET "http://localhost:3002/store?k=hi"
 ```
 
-You can also check out the current Raft node state as well as its point of views of all of its peers:
+You can also check out the current Raft node state as well as its point of views of all of the Raft cluster members:
 
 ```bash
 curl -XGET "http://localhost:3003/state"
-curl -XGET "http://localhost:3003/peers"
+curl -XGET "http://localhost:3003/members"
 ```
 
 ## Building Protobuf files

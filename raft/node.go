@@ -3,9 +3,7 @@ package raft
 import (
 	"context"
 	"sync"
-	"time"
 
-	multierror "github.com/hashicorp/go-multierror"
 	"go.uber.org/zap"
 
 	"github.com/ulysseses/raft/raftpb"
@@ -13,8 +11,8 @@ import (
 
 // Node is a Raft node that interafts with an Application state machine and network.
 type Node struct {
-	r *raftStateMachine
-	t *transport
+	psm *protocolStateMachine
+	tr  *transport
 
 	_padding0 [64]byte
 	proposeMu sync.Mutex
@@ -33,12 +31,12 @@ type Node struct {
 
 // Propose should be called by the client/application.
 func (n *Node) Propose(ctx context.Context, data []byte) error {
-	return n.propose(ctx, time.Now().UnixNano(), data)
+	return n.propose(ctx, data)
 }
 
 // Read should be called by the client/application.
 func (n *Node) Read(ctx context.Context) error {
-	readIndex, err := n.read(ctx, time.Now().UnixNano())
+	readIndex, err := n.read(ctx)
 	if err != nil {
 		return err
 	}
@@ -46,30 +44,30 @@ func (n *Node) Read(ctx context.Context) error {
 }
 
 // State returns the latest known state of the Raft node.
-func (n *Node) State() raftpb.State {
-	n.r.stateReqChan <- stateReq{}
-	return <-n.r.stateRespChan
+func (n *Node) State() State {
+	n.psm.stateReqChan <- stateReq{}
+	return <-n.psm.stateRespChan
 }
 
-// Peers returns the latest state of this node's peers.
-func (n *Node) Peers() map[uint64]Peer {
-	n.r.peerReqChan <- peerRequest{}
-	return <-n.r.peerRespChan
+// Members returns the latest member states.
+func (n *Node) Members() map[uint64]MemberState {
+	n.psm.membersReqChan <- membersRequest{}
+	return <-n.psm.membersRespChan
 }
 
 // propose proposes data to the raft log.
-func (n *Node) propose(ctx context.Context, unixNano int64, data []byte) error {
+func (n *Node) propose(ctx context.Context, data []byte) error {
 	n.proposeMu.Lock()
 	done := ctx.Done()
 	select {
-	case n.r.propReqChan <- proposalRequest{unixNano: unixNano, data: data}:
+	case n.psm.propReqChan <- proposalRequest{data: data}:
 	case <-done:
 		n.proposeMu.Unlock()
 		return ctx.Err()
 	}
 
 	select {
-	case _ = <-n.r.propRespChan:
+	case _ = <-n.psm.propRespChan:
 		n.proposeMu.Unlock()
 		return nil
 	case <-done:
@@ -84,18 +82,18 @@ func (n *Node) propose(ctx context.Context, unixNano int64, data []byte) error {
 //   acknowledged.
 // ConsistencyLinearizable: A read request is sent to each raft node. read is acknowledged once
 //   a quorum has acknowledged the read request.
-func (n *Node) read(ctx context.Context, unixNano int64) (uint64, error) {
+func (n *Node) read(ctx context.Context) (uint64, error) {
 	n.readMu.Lock()
 	done := ctx.Done()
 	select {
-	case n.r.readReqChan <- readRequest{unixNano: unixNano}:
+	case n.psm.readReqChan <- readRequest{}:
 	case <-done:
 		n.readMu.Unlock()
 		return 0, ctx.Err()
 	}
 
 	select {
-	case readResult := <-n.r.readRespChan:
+	case readResult := <-n.psm.readRespChan:
 		n.readMu.Unlock()
 		return readResult.index, nil
 	case <-done:
@@ -105,14 +103,14 @@ func (n *Node) read(ctx context.Context, unixNano int64) (uint64, error) {
 }
 
 func (n *Node) applyTo(ctx context.Context, index uint64) error {
-	n.r.log.Lock()
-	err := n.applyFunc(n.r.log.entries(n.applied+1, index))
-	n.r.log.Unlock()
+	n.psm.log.Lock()
+	err := n.applyFunc(n.psm.log.entries(n.applied+1, index))
+	n.psm.log.Unlock()
 	return err
 }
 
 func (n *Node) runApplication() error {
-	var commitChan <-chan uint64 = n.r.commitChan
+	var commitChan <-chan uint64 = n.psm.commitChan
 	for {
 		select {
 		case <-n.stopAppChan:
@@ -126,13 +124,9 @@ func (n *Node) runApplication() error {
 }
 
 // Start starts the Raft node.
-func (n *Node) Start() error {
-	if err := n.t.start(); err != nil {
-		return err
-	}
-	if err := n.r.start(); err != nil {
-		return err
-	}
+func (n *Node) Start() {
+	n.tr.start()
+	n.psm.start()
 	go func() {
 		err := n.runApplication()
 		if err != nil {
@@ -140,50 +134,14 @@ func (n *Node) Start() error {
 		}
 		n.stopAppErrChan <- err
 	}()
-	return nil
 }
 
 // Stop stops the Raft node.
 func (n *Node) Stop() error {
-	var result *multierror.Error
-	if err := n.r.stop(); err != nil {
-		result = multierror.Append(result, err)
-	}
-	if err := n.t.stop(); err != nil {
-		result = multierror.Append(result, err)
-	}
+	n.psm.stop()
+	n.tr.stop()
 	n.stopAppChan <- struct{}{}
-	result = multierror.Append(result, <-n.stopAppErrChan)
-	return result.ErrorOrNil()
-}
-
-// NewNode constructs a new Raft Node from Configuration.
-func NewNode(c Configuration, a Application) (*Node, error) {
-	// Initialize transport
-	t, err := newTransport(c)
-	if err != nil {
-		return nil, err
-	}
-
-	// Initialize raftStateMachine
-	r, err := newRaftStateMachine(c, t.recvChan, t.sendChan)
-	if err != nil {
-		return nil, err
-	}
-
-	n := Node{
-		r:              r,
-		t:              t,
-		stopAppChan:    make(chan struct{}),
-		stopAppErrChan: make(chan error),
-		logger:         c.Logger,
-		sugaredLogger:  c.Logger.Sugar(),
-	}
-
-	// Attach Application to Node
-	n.applyFunc = a.Apply
-
-	return &n, nil
+	return <-n.stopAppErrChan
 }
 
 // Application applies the committed raft entries. Applications interfacing with

@@ -8,7 +8,6 @@ option (gogoproto.unmarshaler_all) = true;
 option (gogoproto.goproto_enum_prefix_all) = false;
 
 message Message {
-  // Fields in all Messages
   optional uint64      term     = 1   [(gogoproto.nullable) = false];
   optional uint64      from     = 2   [(gogoproto.nullable) = false];
   optional uint64      to       = 3   [(gogoproto.nullable) = false];
@@ -16,49 +15,50 @@ message Message {
   optional uint64      index    = 5   [(gogoproto.nullable) = false];
   optional uint64      logTerm  = 6   [(gogoproto.nullable) = false];
   optional uint64      commit   = 7   [(gogoproto.nullable) = false];
-  optional int64       unixNano = 8   [(gogoproto.nullable) = false];
+  optional int64       tid      = 8   [(gogoproto.nullable) = false];
   optional uint64      proxy    = 9   [(gogoproto.nullable) = false];
   repeated Entry       entries  = 10  [(gogoproto.nullable) = false];
+  optional bool        success  = 11  [(gogoproto.nullable) = false];
 }
 
 enum MessageType {
   MsgUnknown  = 0;
   
   // MsgApp Fields
-  // * commit:   leader's commit
-  // * entries:  entries to append, ignored if there is read request context
-  // * logTerm:  previous entry term
   // * index:    previous entry index
-  // * unixNano: read request context, otherwise 0 if none
+  // * logTerm:  previous entry term
+  // * commit:   leader's commit
+  // * tid:      read request context, otherwise 0 if none
   // * proxy:    read request context, otherwise 0 if none
+  // * entries:  entries to append, ignored if there is read request context
   MsgApp      = 1;
 
   // MsgAppResp Fields
   // * index:    index of the largest match index,
-  //             0 if unsuccessful or responding to read request
-  // * unixNano: read request context, otherwise 0 if none
+  // * tid:      read request context, otherwise 0 if none
   // * proxy:    read request context, otherwise 0 if none
+  // * success:  whether or not the append request was successful
   MsgAppResp  = 2;
 
   // MsgRead Fields
-  // * unixNano: read request context
+  // * tid: read request context
   MsgRead     = 3;
   
   // MsgReadResp Fields
-  // * unixNano: read request context
-  // * index:    read index
+  // * tid:   read request context
+  // * index: read index
   MsgReadResp = 4;
 
   // MsgProp Fields
-  // * unixNano: context associated with a proposal request
-  // * entries: contains only 1 entry, of which only the data field is used
-  //            to contain the proposed data
+  // * tid:      context associated with a proposal request
+  // * entries:  contains only 1 entry, of which only the data field is used
+  //             to contain the proposed data
   MsgProp     = 5;
 
   // MsgPropResp Fields
-  // * unixNano: context associated with a proposal request
-  // * index:   index of the successfully proposed entry, 0 if unsuccessful
-  // * logTerm: term of the successfully proposed entry, 0 if unsuccessful
+  // * tid:      context associated with a proposal request
+  // * index:    index of the successfully proposed entry, 0 if unsuccessful
+  // * logTerm:  term of the successfully proposed entry, 0 if unsuccessful
   MsgPropResp = 6;
 
   // MsgVote Fields
@@ -76,22 +76,8 @@ message Entry {
   optional bytes  data  = 3  [(gogoproto.nullable) = false];
 }
 
-message State {
-  optional Role   role      = 1  [(gogoproto.nullable) = false];
-  optional uint64 term      = 2  [(gogoproto.nullable) = false];
-  optional uint64 leader    = 3  [(gogoproto.nullable) = false];
-  optional uint64 commit    = 4  [(gogoproto.nullable) = false];
-  optional uint64 votedFor  = 5  [(gogoproto.nullable) = false];
-  optional uint64 lastIndex = 6  [(gogoproto.nullable) = false];
-  optional uint64 logTerm   = 7  [(gogoproto.nullable) = false];
-}
-
-enum Role {
-  RoleFollower  = 0;
-  RoleCandidate = 1;
-  RoleLeader    = 2;
-}
+message Empty {}
 
 service RaftProtocol {
-  rpc Communicate(stream Message) returns (stream Message) {}
+  rpc Communicate(stream Message) returns (Empty) {}
 }

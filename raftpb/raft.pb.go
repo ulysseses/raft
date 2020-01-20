@@ -32,35 +32,35 @@ type MessageType int32
 const (
 	MsgUnknown MessageType = 0
 	// MsgApp Fields
-	// * commit:   leader's commit
-	// * entries:  entries to append, ignored if there is read request context
-	// * logTerm:  previous entry term
 	// * index:    previous entry index
-	// * unixNano: read request context, otherwise 0 if none
+	// * logTerm:  previous entry term
+	// * commit:   leader's commit
+	// * tid:      read request context, otherwise 0 if none
 	// * proxy:    read request context, otherwise 0 if none
+	// * entries:  entries to append, ignored if there is read request context
 	MsgApp MessageType = 1
 	// MsgAppResp Fields
 	// * index:    index of the largest match index,
-	//             0 if unsuccessful or responding to read request
-	// * unixNano: read request context, otherwise 0 if none
+	// * tid:      read request context, otherwise 0 if none
 	// * proxy:    read request context, otherwise 0 if none
+	// * success:  whether or not the append request was successful
 	MsgAppResp MessageType = 2
 	// MsgRead Fields
-	// * unixNano: read request context
+	// * tid: read request context
 	MsgRead MessageType = 3
 	// MsgReadResp Fields
-	// * unixNano: read request context
-	// * index:    read index
+	// * tid:   read request context
+	// * index: read index
 	MsgReadResp MessageType = 4
 	// MsgProp Fields
-	// * unixNano: context associated with a proposal request
-	// * entries: contains only 1 entry, of which only the data field is used
-	//            to contain the proposed data
+	// * tid:      context associated with a proposal request
+	// * entries:  contains only 1 entry, of which only the data field is used
+	//             to contain the proposed data
 	MsgProp MessageType = 5
 	// MsgPropResp Fields
-	// * unixNano: context associated with a proposal request
-	// * index:   index of the successfully proposed entry, 0 if unsuccessful
-	// * logTerm: term of the successfully proposed entry, 0 if unsuccessful
+	// * tid:      context associated with a proposal request
+	// * index:    index of the successfully proposed entry, 0 if unsuccessful
+	// * logTerm:  term of the successfully proposed entry, 0 if unsuccessful
 	MsgPropResp MessageType = 6
 	// MsgVote Fields
 	// * index:   index of the candidate's last entry
@@ -117,61 +117,18 @@ func (MessageType) EnumDescriptor() ([]byte, []int) {
 	return fileDescriptor_b042552c306ae59b, []int{0}
 }
 
-type Role int32
-
-const (
-	RoleFollower  Role = 0
-	RoleCandidate Role = 1
-	RoleLeader    Role = 2
-)
-
-var Role_name = map[int32]string{
-	0: "RoleFollower",
-	1: "RoleCandidate",
-	2: "RoleLeader",
-}
-
-var Role_value = map[string]int32{
-	"RoleFollower":  0,
-	"RoleCandidate": 1,
-	"RoleLeader":    2,
-}
-
-func (x Role) Enum() *Role {
-	p := new(Role)
-	*p = x
-	return p
-}
-
-func (x Role) String() string {
-	return proto.EnumName(Role_name, int32(x))
-}
-
-func (x *Role) UnmarshalJSON(data []byte) error {
-	value, err := proto.UnmarshalJSONEnum(Role_value, data, "Role")
-	if err != nil {
-		return err
-	}
-	*x = Role(value)
-	return nil
-}
-
-func (Role) EnumDescriptor() ([]byte, []int) {
-	return fileDescriptor_b042552c306ae59b, []int{1}
-}
-
 type Message struct {
-	// Fields in all Messages
-	Term     uint64      `protobuf:"varint,1,opt,name=term" json:"term"`
-	From     uint64      `protobuf:"varint,2,opt,name=from" json:"from"`
-	To       uint64      `protobuf:"varint,3,opt,name=to" json:"to"`
-	Type     MessageType `protobuf:"varint,4,opt,name=type,enum=raftpb.MessageType" json:"type"`
-	Index    uint64      `protobuf:"varint,5,opt,name=index" json:"index"`
-	LogTerm  uint64      `protobuf:"varint,6,opt,name=logTerm" json:"logTerm"`
-	Commit   uint64      `protobuf:"varint,7,opt,name=commit" json:"commit"`
-	UnixNano int64       `protobuf:"varint,8,opt,name=unixNano" json:"unixNano"`
-	Proxy    uint64      `protobuf:"varint,9,opt,name=proxy" json:"proxy"`
-	Entries  []Entry     `protobuf:"bytes,10,rep,name=entries" json:"entries"`
+	Term    uint64      `protobuf:"varint,1,opt,name=term" json:"term"`
+	From    uint64      `protobuf:"varint,2,opt,name=from" json:"from"`
+	To      uint64      `protobuf:"varint,3,opt,name=to" json:"to"`
+	Type    MessageType `protobuf:"varint,4,opt,name=type,enum=raftpb.MessageType" json:"type"`
+	Index   uint64      `protobuf:"varint,5,opt,name=index" json:"index"`
+	LogTerm uint64      `protobuf:"varint,6,opt,name=logTerm" json:"logTerm"`
+	Commit  uint64      `protobuf:"varint,7,opt,name=commit" json:"commit"`
+	Tid     int64       `protobuf:"varint,8,opt,name=tid" json:"tid"`
+	Proxy   uint64      `protobuf:"varint,9,opt,name=proxy" json:"proxy"`
+	Entries []Entry     `protobuf:"bytes,10,rep,name=entries" json:"entries"`
+	Success bool        `protobuf:"varint,11,opt,name=success" json:"success"`
 }
 
 func (m *Message) Reset()         { *m = Message{} }
@@ -256,9 +213,9 @@ func (m *Message) GetCommit() uint64 {
 	return 0
 }
 
-func (m *Message) GetUnixNano() int64 {
+func (m *Message) GetTid() int64 {
 	if m != nil {
-		return m.UnixNano
+		return m.Tid
 	}
 	return 0
 }
@@ -275,6 +232,13 @@ func (m *Message) GetEntries() []Entry {
 		return m.Entries
 	}
 	return nil
+}
+
+func (m *Message) GetSuccess() bool {
+	if m != nil {
+		return m.Success
+	}
+	return false
 }
 
 type Entry struct {
@@ -337,28 +301,21 @@ func (m *Entry) GetData() []byte {
 	return nil
 }
 
-type State struct {
-	Role      Role   `protobuf:"varint,1,opt,name=role,enum=raftpb.Role" json:"role"`
-	Term      uint64 `protobuf:"varint,2,opt,name=term" json:"term"`
-	Leader    uint64 `protobuf:"varint,3,opt,name=leader" json:"leader"`
-	Commit    uint64 `protobuf:"varint,4,opt,name=commit" json:"commit"`
-	VotedFor  uint64 `protobuf:"varint,5,opt,name=votedFor" json:"votedFor"`
-	LastIndex uint64 `protobuf:"varint,6,opt,name=lastIndex" json:"lastIndex"`
-	LogTerm   uint64 `protobuf:"varint,7,opt,name=logTerm" json:"logTerm"`
+type Empty struct {
 }
 
-func (m *State) Reset()         { *m = State{} }
-func (m *State) String() string { return proto.CompactTextString(m) }
-func (*State) ProtoMessage()    {}
-func (*State) Descriptor() ([]byte, []int) {
+func (m *Empty) Reset()         { *m = Empty{} }
+func (m *Empty) String() string { return proto.CompactTextString(m) }
+func (*Empty) ProtoMessage()    {}
+func (*Empty) Descriptor() ([]byte, []int) {
 	return fileDescriptor_b042552c306ae59b, []int{2}
 }
-func (m *State) XXX_Unmarshal(b []byte) error {
+func (m *Empty) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
 }
-func (m *State) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+func (m *Empty) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
 	if deterministic {
-		return xxx_messageInfo_State.Marshal(b, m, deterministic)
+		return xxx_messageInfo_Empty.Marshal(b, m, deterministic)
 	} else {
 		b = b[:cap(b)]
 		n, err := m.MarshalToSizedBuffer(b)
@@ -368,114 +325,58 @@ func (m *State) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
 		return b[:n], nil
 	}
 }
-func (m *State) XXX_Merge(src proto.Message) {
-	xxx_messageInfo_State.Merge(m, src)
+func (m *Empty) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_Empty.Merge(m, src)
 }
-func (m *State) XXX_Size() int {
+func (m *Empty) XXX_Size() int {
 	return m.Size()
 }
-func (m *State) XXX_DiscardUnknown() {
-	xxx_messageInfo_State.DiscardUnknown(m)
+func (m *Empty) XXX_DiscardUnknown() {
+	xxx_messageInfo_Empty.DiscardUnknown(m)
 }
 
-var xxx_messageInfo_State proto.InternalMessageInfo
-
-func (m *State) GetRole() Role {
-	if m != nil {
-		return m.Role
-	}
-	return RoleFollower
-}
-
-func (m *State) GetTerm() uint64 {
-	if m != nil {
-		return m.Term
-	}
-	return 0
-}
-
-func (m *State) GetLeader() uint64 {
-	if m != nil {
-		return m.Leader
-	}
-	return 0
-}
-
-func (m *State) GetCommit() uint64 {
-	if m != nil {
-		return m.Commit
-	}
-	return 0
-}
-
-func (m *State) GetVotedFor() uint64 {
-	if m != nil {
-		return m.VotedFor
-	}
-	return 0
-}
-
-func (m *State) GetLastIndex() uint64 {
-	if m != nil {
-		return m.LastIndex
-	}
-	return 0
-}
-
-func (m *State) GetLogTerm() uint64 {
-	if m != nil {
-		return m.LogTerm
-	}
-	return 0
-}
+var xxx_messageInfo_Empty proto.InternalMessageInfo
 
 func init() {
 	proto.RegisterEnum("raftpb.MessageType", MessageType_name, MessageType_value)
-	proto.RegisterEnum("raftpb.Role", Role_name, Role_value)
 	proto.RegisterType((*Message)(nil), "raftpb.Message")
 	proto.RegisterType((*Entry)(nil), "raftpb.Entry")
-	proto.RegisterType((*State)(nil), "raftpb.State")
+	proto.RegisterType((*Empty)(nil), "raftpb.Empty")
 }
 
 func init() { proto.RegisterFile("raft.proto", fileDescriptor_b042552c306ae59b) }
 
 var fileDescriptor_b042552c306ae59b = []byte{
-	// 555 bytes of a gzipped FileDescriptorProto
-	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x7c, 0x93, 0x41, 0x6f, 0xda, 0x30,
-	0x14, 0xc7, 0xe3, 0x10, 0x12, 0xfa, 0xa0, 0x34, 0xf3, 0x76, 0x88, 0x10, 0xca, 0x10, 0x87, 0x09,
-	0x55, 0x82, 0x4e, 0x48, 0x3b, 0xed, 0xd4, 0x56, 0xad, 0x34, 0x69, 0x4c, 0x15, 0xeb, 0xb6, 0xb3,
-	0x21, 0x26, 0x8b, 0x96, 0xc4, 0x96, 0x63, 0x56, 0xf8, 0x16, 0x93, 0xf6, 0xa5, 0xba, 0x1b, 0xc7,
-	0x9d, 0xa6, 0x0d, 0x8e, 0xfb, 0x12, 0x93, 0x4d, 0x42, 0xd3, 0x0e, 0xf5, 0x44, 0xde, 0xef, 0x07,
-	0xf6, 0x7b, 0xff, 0x47, 0x00, 0x04, 0x99, 0xc9, 0x01, 0x17, 0x4c, 0x32, 0x6c, 0xab, 0x67, 0x3e,
-	0x69, 0xf5, 0xc3, 0x48, 0x7e, 0x9e, 0x4f, 0x06, 0x53, 0x96, 0x9c, 0x84, 0x2c, 0x64, 0x27, 0x5a,
-	0x4f, 0xe6, 0x33, 0x5d, 0xe9, 0x42, 0x3f, 0x6d, 0x7f, 0xd6, 0xfd, 0x61, 0x82, 0x33, 0xa2, 0x59,
-	0x46, 0x42, 0x8a, 0x3d, 0xb0, 0x24, 0x15, 0x89, 0x87, 0x3a, 0xa8, 0x67, 0x9d, 0x59, 0xb7, 0xbf,
-	0x9e, 0x1b, 0x63, 0x4d, 0x94, 0x99, 0x09, 0x96, 0x78, 0x66, 0xd9, 0x28, 0x82, 0x9f, 0x81, 0x29,
-	0x99, 0x57, 0x29, 0x71, 0x53, 0x32, 0xdc, 0x07, 0x4b, 0x2e, 0x39, 0xf5, 0xac, 0x0e, 0xea, 0x35,
-	0x87, 0x4f, 0x07, 0xdb, 0xde, 0x06, 0xf9, 0x45, 0xd7, 0x4b, 0x4e, 0x77, 0xc7, 0x2f, 0x39, 0xc5,
-	0x2d, 0xa8, 0x46, 0x69, 0x40, 0x17, 0x5e, 0xb5, 0x74, 0xce, 0x16, 0x61, 0x1f, 0x9c, 0x98, 0x85,
-	0xd7, 0xaa, 0x2f, 0xbb, 0x64, 0x0b, 0x88, 0xdb, 0x60, 0x4f, 0x59, 0x92, 0x44, 0xd2, 0x73, 0x4a,
-	0x3a, 0x67, 0xb8, 0x03, 0xb5, 0x79, 0x1a, 0x2d, 0xde, 0x91, 0x94, 0x79, 0xb5, 0x0e, 0xea, 0x55,
-	0x72, 0xbf, 0xa3, 0xea, 0x6e, 0x2e, 0xd8, 0x62, 0xe9, 0x1d, 0x94, 0xef, 0xd6, 0x08, 0xf7, 0xc1,
-	0xa1, 0xa9, 0x14, 0x11, 0xcd, 0x3c, 0xe8, 0x54, 0x7a, 0xf5, 0xe1, 0x61, 0x31, 0xc9, 0x45, 0x2a,
-	0xc5, 0xb2, 0x68, 0x25, 0xff, 0x4e, 0xf7, 0x13, 0x54, 0x35, 0xbf, 0x9b, 0x07, 0xfd, 0x3f, 0x4f,
-	0x11, 0xb2, 0xb9, 0x2f, 0xe4, 0x80, 0x48, 0xa2, 0xc3, 0x6c, 0x14, 0x46, 0x91, 0xee, 0x5f, 0x04,
-	0xd5, 0xf7, 0x92, 0x48, 0x8a, 0x5f, 0x80, 0x25, 0x58, 0x4c, 0xf5, 0xc1, 0xcd, 0x61, 0xa3, 0x68,
-	0x67, 0xcc, 0xe2, 0x5d, 0xa2, 0xca, 0x3f, 0x72, 0x4b, 0x1b, 0xec, 0x98, 0x92, 0x80, 0x8a, 0x7b,
-	0x4b, 0xcb, 0x59, 0x29, 0x4d, 0x6b, 0x7f, 0x9a, 0x5f, 0x99, 0xa4, 0xc1, 0x25, 0x13, 0xf7, 0x56,
-	0xb5, 0xa3, 0xb8, 0x0b, 0x07, 0x31, 0xc9, 0xe4, 0x1b, 0x3d, 0x7d, 0x79, 0x5f, 0x77, 0xb8, 0xbc,
-	0x51, 0x67, 0xcf, 0x46, 0x8f, 0xbf, 0x23, 0xa8, 0x97, 0xfe, 0x29, 0xb8, 0x09, 0x30, 0xca, 0xc2,
-	0x0f, 0xe9, 0x97, 0x94, 0xdd, 0xa4, 0xae, 0x81, 0x01, 0xec, 0x51, 0x16, 0x9e, 0x72, 0xee, 0xa2,
-	0xdc, 0x9d, 0x72, 0x3e, 0xa6, 0x19, 0x77, 0x4d, 0x5c, 0x07, 0x67, 0x94, 0x85, 0x63, 0x4a, 0x02,
-	0xb7, 0x82, 0x8f, 0xa0, 0x9e, 0x17, 0xda, 0x5a, 0xb9, 0xbd, 0x12, 0x8c, 0xbb, 0xd5, 0xdc, 0xaa,
-	0x42, 0x5b, 0x3b, 0xb7, 0x1f, 0x99, 0xa4, 0xae, 0x93, 0x5b, 0x55, 0x68, 0x5b, 0x3b, 0x7e, 0x0d,
-	0x96, 0x4a, 0x19, 0xbb, 0xd0, 0x50, 0x9f, 0x97, 0x2c, 0x8e, 0xd9, 0x0d, 0x15, 0xae, 0x81, 0x9f,
-	0xc0, 0xa1, 0x22, 0xe7, 0x24, 0x0d, 0xa2, 0x80, 0x48, 0xba, 0x6d, 0x4b, 0xa1, 0xb7, 0x3a, 0x54,
-	0xd7, 0x1c, 0x5e, 0x40, 0x63, 0x4c, 0x66, 0xf2, 0x4a, 0xbd, 0x72, 0x53, 0x16, 0xe3, 0x57, 0x50,
-	0x3f, 0x67, 0x49, 0x32, 0x4f, 0xa3, 0xa9, 0xda, 0xea, 0xd1, 0x83, 0x17, 0xa4, 0xf5, 0x10, 0x74,
-	0x8d, 0x1e, 0x7a, 0x89, 0xce, 0xda, 0xab, 0x3f, 0xbe, 0x71, 0xbb, 0xf6, 0xd1, 0x6a, 0xed, 0xa3,
-	0xdf, 0x6b, 0x1f, 0x7d, 0xdb, 0xf8, 0xc6, 0x6a, 0xe3, 0x1b, 0x3f, 0x37, 0xbe, 0xf1, 0x2f, 0x00,
-	0x00, 0xff, 0xff, 0xe7, 0x97, 0x5e, 0x4a, 0x0e, 0x04, 0x00, 0x00,
+	// 454 bytes of a gzipped FileDescriptorProto
+	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x6c, 0x92, 0xdd, 0x6a, 0xdb, 0x30,
+	0x14, 0xc7, 0x2d, 0x7f, 0x66, 0xc7, 0x5d, 0x6b, 0xb4, 0x31, 0x44, 0x28, 0x9e, 0xc9, 0x95, 0x19,
+	0x24, 0x65, 0x79, 0x83, 0x74, 0xf4, 0x32, 0x50, 0x42, 0xb7, 0x5d, 0x3b, 0x8e, 0xe2, 0x99, 0xd5,
+	0x96, 0xb0, 0x64, 0x56, 0xbf, 0xc5, 0x60, 0x2f, 0xd5, 0xcb, 0x5c, 0xee, 0x6a, 0x1f, 0xc9, 0x8b,
+	0x0c, 0x29, 0xf2, 0x62, 0xb6, 0xde, 0xf9, 0xfc, 0x7e, 0x96, 0xce, 0x39, 0x7f, 0x04, 0xd0, 0x64,
+	0x5b, 0x39, 0xe3, 0x0d, 0x93, 0x0c, 0xfb, 0xea, 0x9b, 0xaf, 0xc7, 0xd3, 0xa2, 0x94, 0x9f, 0xda,
+	0xf5, 0x2c, 0x67, 0xd5, 0x55, 0xc1, 0x0a, 0x76, 0xa5, 0xf5, 0xba, 0xdd, 0xea, 0x4a, 0x17, 0xfa,
+	0xeb, 0x78, 0x6c, 0xf2, 0xd3, 0x86, 0x60, 0x49, 0x85, 0xc8, 0x0a, 0x8a, 0x09, 0xb8, 0x92, 0x36,
+	0x15, 0x41, 0x09, 0x4a, 0xdd, 0x6b, 0xf7, 0xf1, 0xc7, 0x6b, 0x6b, 0xa5, 0x89, 0x32, 0xdb, 0x86,
+	0x55, 0xc4, 0x1e, 0x1a, 0x45, 0xf0, 0x4b, 0xb0, 0x25, 0x23, 0xce, 0x80, 0xdb, 0x92, 0xe1, 0x29,
+	0xb8, 0xb2, 0xe3, 0x94, 0xb8, 0x09, 0x4a, 0xcf, 0xe7, 0x2f, 0x66, 0xc7, 0xd9, 0x66, 0xa6, 0xd1,
+	0x5d, 0xc7, 0xe9, 0xdf, 0xeb, 0x3b, 0x4e, 0xf1, 0x18, 0xbc, 0xb2, 0xde, 0xd0, 0x07, 0xe2, 0x0d,
+	0xee, 0x39, 0x22, 0x1c, 0x43, 0x70, 0xcf, 0x8a, 0x3b, 0x35, 0x97, 0x3f, 0xb0, 0x3d, 0xc4, 0x97,
+	0xe0, 0xe7, 0xac, 0xaa, 0x4a, 0x49, 0x82, 0x81, 0x36, 0x0c, 0xbf, 0x02, 0x47, 0x96, 0x1b, 0x32,
+	0x4a, 0x50, 0xea, 0x18, 0xa5, 0x80, 0xea, 0xc8, 0x1b, 0xf6, 0xd0, 0x91, 0x67, 0xc3, 0x8e, 0x1a,
+	0xe1, 0x29, 0x04, 0xb4, 0x96, 0x4d, 0x49, 0x05, 0x81, 0xc4, 0x49, 0xc3, 0xf9, 0xf3, 0x7e, 0xfe,
+	0x9b, 0x5a, 0x36, 0x5d, 0x3f, 0x80, 0xf9, 0x47, 0x0d, 0x28, 0xda, 0x3c, 0xa7, 0x42, 0x90, 0x30,
+	0x41, 0xe9, 0xa8, 0xf7, 0x06, 0x4e, 0x3e, 0x82, 0xa7, 0xcf, 0x9d, 0xb6, 0x44, 0xff, 0x6f, 0xd9,
+	0x47, 0x6f, 0x3f, 0x15, 0xfd, 0x26, 0x93, 0x99, 0x8e, 0xf8, 0xac, 0x37, 0x8a, 0x4c, 0x02, 0xf0,
+	0x6e, 0x2a, 0x2e, 0xbb, 0x37, 0xdf, 0x10, 0x84, 0x83, 0x68, 0xf1, 0x39, 0xc0, 0x52, 0x14, 0xef,
+	0xeb, 0xcf, 0x35, 0xfb, 0x52, 0x47, 0x16, 0x06, 0xf0, 0x97, 0xa2, 0x58, 0x70, 0x1e, 0x21, 0xe3,
+	0x16, 0x9c, 0xaf, 0xa8, 0xe0, 0x91, 0x8d, 0x43, 0x08, 0x96, 0xa2, 0x58, 0xd1, 0x6c, 0x13, 0x39,
+	0xf8, 0x02, 0x42, 0x53, 0x68, 0xeb, 0x1a, 0x7b, 0xdb, 0x30, 0x1e, 0x79, 0xc6, 0xaa, 0x42, 0x5b,
+	0xdf, 0xd8, 0x0f, 0x4c, 0xd2, 0x28, 0x30, 0x56, 0x15, 0xda, 0x8e, 0xe6, 0x0b, 0x38, 0x5b, 0x65,
+	0x5b, 0x79, 0xab, 0x9e, 0x59, 0xce, 0xee, 0xf1, 0x5b, 0x08, 0xdf, 0xb1, 0xaa, 0x6a, 0xeb, 0x32,
+	0xcf, 0x24, 0xc5, 0x17, 0xff, 0x3c, 0x8a, 0xf1, 0x29, 0x65, 0xb5, 0xd4, 0xc4, 0x4a, 0xd1, 0xf5,
+	0xe5, 0xee, 0x77, 0x6c, 0x3d, 0xee, 0x63, 0xb4, 0xdb, 0xc7, 0xe8, 0xd7, 0x3e, 0x46, 0x5f, 0x0f,
+	0xb1, 0xb5, 0x3b, 0xc4, 0xd6, 0xf7, 0x43, 0x6c, 0xfd, 0x09, 0x00, 0x00, 0xff, 0xff, 0xf9, 0x62,
+	0xc7, 0x40, 0xfe, 0x02, 0x00, 0x00,
 }
 
 // Reference imports to suppress errors if they are not otherwise used.
@@ -512,7 +413,7 @@ func (c *raftProtocolClient) Communicate(ctx context.Context, opts ...grpc.CallO
 
 type RaftProtocol_CommunicateClient interface {
 	Send(*Message) error
-	Recv() (*Message, error)
+	CloseAndRecv() (*Empty, error)
 	grpc.ClientStream
 }
 
@@ -524,8 +425,11 @@ func (x *raftProtocolCommunicateClient) Send(m *Message) error {
 	return x.ClientStream.SendMsg(m)
 }
 
-func (x *raftProtocolCommunicateClient) Recv() (*Message, error) {
-	m := new(Message)
+func (x *raftProtocolCommunicateClient) CloseAndRecv() (*Empty, error) {
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	m := new(Empty)
 	if err := x.ClientStream.RecvMsg(m); err != nil {
 		return nil, err
 	}
@@ -554,7 +458,7 @@ func _RaftProtocol_Communicate_Handler(srv interface{}, stream grpc.ServerStream
 }
 
 type RaftProtocol_CommunicateServer interface {
-	Send(*Message) error
+	SendAndClose(*Empty) error
 	Recv() (*Message, error)
 	grpc.ServerStream
 }
@@ -563,7 +467,7 @@ type raftProtocolCommunicateServer struct {
 	grpc.ServerStream
 }
 
-func (x *raftProtocolCommunicateServer) Send(m *Message) error {
+func (x *raftProtocolCommunicateServer) SendAndClose(m *Empty) error {
 	return x.ServerStream.SendMsg(m)
 }
 
@@ -583,7 +487,6 @@ var _RaftProtocol_serviceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "Communicate",
 			Handler:       _RaftProtocol_Communicate_Handler,
-			ServerStreams: true,
 			ClientStreams: true,
 		},
 	},
@@ -610,6 +513,14 @@ func (m *Message) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	_ = i
 	var l int
 	_ = l
+	i--
+	if m.Success {
+		dAtA[i] = 1
+	} else {
+		dAtA[i] = 0
+	}
+	i--
+	dAtA[i] = 0x58
 	if len(m.Entries) > 0 {
 		for iNdEx := len(m.Entries) - 1; iNdEx >= 0; iNdEx-- {
 			{
@@ -627,7 +538,7 @@ func (m *Message) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	i = encodeVarintRaft(dAtA, i, uint64(m.Proxy))
 	i--
 	dAtA[i] = 0x48
-	i = encodeVarintRaft(dAtA, i, uint64(m.UnixNano))
+	i = encodeVarintRaft(dAtA, i, uint64(m.Tid))
 	i--
 	dAtA[i] = 0x40
 	i = encodeVarintRaft(dAtA, i, uint64(m.Commit))
@@ -690,7 +601,7 @@ func (m *Entry) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
-func (m *State) Marshal() (dAtA []byte, err error) {
+func (m *Empty) Marshal() (dAtA []byte, err error) {
 	size := m.Size()
 	dAtA = make([]byte, size)
 	n, err := m.MarshalToSizedBuffer(dAtA[:size])
@@ -700,37 +611,16 @@ func (m *State) Marshal() (dAtA []byte, err error) {
 	return dAtA[:n], nil
 }
 
-func (m *State) MarshalTo(dAtA []byte) (int, error) {
+func (m *Empty) MarshalTo(dAtA []byte) (int, error) {
 	size := m.Size()
 	return m.MarshalToSizedBuffer(dAtA[:size])
 }
 
-func (m *State) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+func (m *Empty) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	i := len(dAtA)
 	_ = i
 	var l int
 	_ = l
-	i = encodeVarintRaft(dAtA, i, uint64(m.LogTerm))
-	i--
-	dAtA[i] = 0x38
-	i = encodeVarintRaft(dAtA, i, uint64(m.LastIndex))
-	i--
-	dAtA[i] = 0x30
-	i = encodeVarintRaft(dAtA, i, uint64(m.VotedFor))
-	i--
-	dAtA[i] = 0x28
-	i = encodeVarintRaft(dAtA, i, uint64(m.Commit))
-	i--
-	dAtA[i] = 0x20
-	i = encodeVarintRaft(dAtA, i, uint64(m.Leader))
-	i--
-	dAtA[i] = 0x18
-	i = encodeVarintRaft(dAtA, i, uint64(m.Term))
-	i--
-	dAtA[i] = 0x10
-	i = encodeVarintRaft(dAtA, i, uint64(m.Role))
-	i--
-	dAtA[i] = 0x8
 	return len(dAtA) - i, nil
 }
 
@@ -758,7 +648,7 @@ func (m *Message) Size() (n int) {
 	n += 1 + sovRaft(uint64(m.Index))
 	n += 1 + sovRaft(uint64(m.LogTerm))
 	n += 1 + sovRaft(uint64(m.Commit))
-	n += 1 + sovRaft(uint64(m.UnixNano))
+	n += 1 + sovRaft(uint64(m.Tid))
 	n += 1 + sovRaft(uint64(m.Proxy))
 	if len(m.Entries) > 0 {
 		for _, e := range m.Entries {
@@ -766,6 +656,7 @@ func (m *Message) Size() (n int) {
 			n += 1 + l + sovRaft(uint64(l))
 		}
 	}
+	n += 2
 	return n
 }
 
@@ -784,19 +675,12 @@ func (m *Entry) Size() (n int) {
 	return n
 }
 
-func (m *State) Size() (n int) {
+func (m *Empty) Size() (n int) {
 	if m == nil {
 		return 0
 	}
 	var l int
 	_ = l
-	n += 1 + sovRaft(uint64(m.Role))
-	n += 1 + sovRaft(uint64(m.Term))
-	n += 1 + sovRaft(uint64(m.Leader))
-	n += 1 + sovRaft(uint64(m.Commit))
-	n += 1 + sovRaft(uint64(m.VotedFor))
-	n += 1 + sovRaft(uint64(m.LastIndex))
-	n += 1 + sovRaft(uint64(m.LogTerm))
 	return n
 }
 
@@ -970,9 +854,9 @@ func (m *Message) Unmarshal(dAtA []byte) error {
 			}
 		case 8:
 			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field UnixNano", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field Tid", wireType)
 			}
-			m.UnixNano = 0
+			m.Tid = 0
 			for shift := uint(0); ; shift += 7 {
 				if shift >= 64 {
 					return ErrIntOverflowRaft
@@ -982,7 +866,7 @@ func (m *Message) Unmarshal(dAtA []byte) error {
 				}
 				b := dAtA[iNdEx]
 				iNdEx++
-				m.UnixNano |= int64(b&0x7F) << shift
+				m.Tid |= int64(b&0x7F) << shift
 				if b < 0x80 {
 					break
 				}
@@ -1040,6 +924,26 @@ func (m *Message) Unmarshal(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
+		case 11:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Success", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowRaft
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.Success = bool(v != 0)
 		default:
 			iNdEx = preIndex
 			skippy, err := skipRaft(dAtA[iNdEx:])
@@ -1189,7 +1093,7 @@ func (m *Entry) Unmarshal(dAtA []byte) error {
 	}
 	return nil
 }
-func (m *State) Unmarshal(dAtA []byte) error {
+func (m *Empty) Unmarshal(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
 	for iNdEx < l {
@@ -1212,145 +1116,12 @@ func (m *State) Unmarshal(dAtA []byte) error {
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
 		if wireType == 4 {
-			return fmt.Errorf("proto: State: wiretype end group for non-group")
+			return fmt.Errorf("proto: Empty: wiretype end group for non-group")
 		}
 		if fieldNum <= 0 {
-			return fmt.Errorf("proto: State: illegal tag %d (wire type %d)", fieldNum, wire)
+			return fmt.Errorf("proto: Empty: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
-		case 1:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Role", wireType)
-			}
-			m.Role = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return ErrIntOverflowRaft
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.Role |= Role(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-		case 2:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Term", wireType)
-			}
-			m.Term = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return ErrIntOverflowRaft
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.Term |= uint64(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-		case 3:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Leader", wireType)
-			}
-			m.Leader = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return ErrIntOverflowRaft
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.Leader |= uint64(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-		case 4:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Commit", wireType)
-			}
-			m.Commit = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return ErrIntOverflowRaft
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.Commit |= uint64(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-		case 5:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field VotedFor", wireType)
-			}
-			m.VotedFor = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return ErrIntOverflowRaft
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.VotedFor |= uint64(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-		case 6:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field LastIndex", wireType)
-			}
-			m.LastIndex = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return ErrIntOverflowRaft
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.LastIndex |= uint64(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-		case 7:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field LogTerm", wireType)
-			}
-			m.LogTerm = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return ErrIntOverflowRaft
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.LogTerm |= uint64(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
 		default:
 			iNdEx = preIndex
 			skippy, err := skipRaft(dAtA[iNdEx:])

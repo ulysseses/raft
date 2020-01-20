@@ -1,199 +1,278 @@
 package raft
 
 import (
+	"context"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/ulysseses/raft/raftpb"
-	"go.uber.org/zap"
-	"google.golang.org/grpc"
 )
 
-// fake Application
-type fakeApplication struct{}
+type noOpApp struct{}
 
-// Apply implements Application for fakeApplication.
-func (app *fakeApplication) Apply(entries []raftpb.Entry) error {
+// Apply implements Application for noOpApp.
+func (app *noOpApp) Apply(entries []raftpb.Entry) error {
 	return nil
 }
 
-// remember to os.RemoveAll(tmpDir)
-func createTmpDir() (string, error) {
-	return ioutil.TempDir("", "")
+func newNoOpApp(id uint64) Application {
+	return &noOpApp{}
 }
 
-func createSocket(dir, testName string, id uint64) string {
-	return fmt.Sprintf("unix://%s%d.sock", filepath.Join(dir, testName), id)
+type commitLog struct {
+	node     *Node
+	_padding [64]byte
+	sync.RWMutex
+	log []raftpb.Entry
 }
 
-func createConfigs(
-	tmpl Configuration,
-	dir, testName string,
+// Apply implements Application for commitLog
+func (cl *commitLog) Apply(entries []raftpb.Entry) error {
+	cl.Lock()
+	cl.log = append(cl.log, entries...)
+	cl.Unlock()
+	return nil
+}
+
+func (cl *commitLog) append(ctx context.Context, x int) error {
+	s := strconv.Itoa(x)
+	return cl.node.Propose(ctx, []byte(s))
+}
+
+func (cl *commitLog) getLatest(ctx context.Context) (int, error) {
+	if err := cl.node.Read(ctx); err != nil {
+		return 0, err
+	}
+	cl.RLock()
+	if len(cl.log) == 0 {
+		cl.RUnlock()
+		return 0, nil
+	}
+	latestEntry := cl.log[len(cl.log)-1]
+	cl.RUnlock()
+	return strconv.Atoi(string(latestEntry.Data))
+}
+
+func newCommitLog(id uint64) Application {
+	return &commitLog{
+		log: []raftpb.Entry{},
+	}
+}
+
+func createUnixSockets(
+	testName string,
 	ids ...uint64,
-) (map[uint64]Configuration, error) {
-	logger := tmpl.Logger
+) (addresses map[uint64]string, cleanup func(), err error) {
+	var tmpDir string
+	tmpDir, err = ioutil.TempDir("", "")
+	if err != nil {
+		return
+	}
+	cleanup = func() {
+		os.RemoveAll(tmpDir)
+	}
 
-	configs := map[uint64]Configuration{}
-	tmpl.PeerAddresses = map[uint64]string{}
+	addresses = map[uint64]string{}
 	for _, id := range ids {
-		addr := createSocket(dir, testName, id)
-		tmpl.PeerAddresses[id] = addr
+		addresses[id] = fmt.Sprintf("unix://%s%d.sock", filepath.Join(tmpDir, testName), id)
 	}
-	for _, id := range ids {
-		specificLogger := logger.With(zap.Uint64("id", id))
-		tmpl.ID = id
-		tmpl.Logger = specificLogger
-		if err := tmpl.Verify(); err != nil {
-			return nil, err
-		}
-		configs[id] = tmpl
-	}
-	return configs, nil
+	return
 }
 
-func BenchmarkTransport(b *testing.B) {
-	unusedConsistency := ConsistencySerializable
-
-	// Setup logger
-	loggerCfg := zap.NewProductionConfig()
-	// loggerCfg.Level.SetLevel(zapcore.DebugLevel)
-	logger, err := loggerCfg.Build()
+func spinUpNodes(
+	t *testing.T,
+	newApp func(uint64) Application,
+	ids []uint64,
+	pOpts []ProtocolConfigOption,
+	tOpts []TransportConfigOption,
+	nOpts []NodeConfigOption,
+) (map[uint64]*Node, map[uint64]Application) {
+	addresses, cleanup, err := createUnixSockets(t.Name(), ids...)
+	defer cleanup()
 	if err != nil {
-		b.Fatal(err)
+		t.Fatal(err)
 	}
 
-	// Spin up three nodes
-	tmpDir, err := createTmpDir()
+	nodes := map[uint64]*Node{}
+	apps := map[uint64]Application{}
+	for _, id := range ids {
+		tConfig := NewTransportConfig(id, addresses, tOpts...)
+		pConfig := NewProtocolConfig(id, pOpts...)
+		nConfig := NewNodeConfig(id, nOpts...)
+		app := newApp(id)
+		node, err := nConfig.Build(pConfig, tConfig, app)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nodes[id] = node
+		apps[id] = app
+	}
+
+	// Start the Raft nodes
+	done := make(chan struct{})
+	for _, node := range nodes {
+		go func(n *Node) {
+			n.Start()
+			done <- struct{}{}
+		}(node)
+	}
+	for range ids {
+		<-done
+	}
+
+	return nodes, apps
+}
+
+func stopAllNodes(t *testing.T, nodes map[uint64]*Node) {
+	for _, node := range nodes {
+		if err := node.Stop(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func Test_3Node_StartAndStop(t *testing.T) {
+	// Spin 3 nodes
+	nodes, _ := spinUpNodes(t, newNoOpApp, []uint64{1, 2, 3}, nil, nil, nil)
+	defer stopAllNodes(t, nodes)
+
+	// Simulate passive cluster
+	time.Sleep(3 * time.Second)
+}
+
+// Benchmark round trip time
+func Benchmark_Transport_RTT(b *testing.B) {
+	addresses, cleanup, err := createUnixSockets(b.Name(), 1, 2)
+	defer cleanup()
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer os.RemoveAll(tmpDir)
-	tmplConfig, err := BuildSensibleConfiguration(1, map[uint64]string{1: ""}, unusedConsistency, logger)
-	if err != nil {
-		b.Fatal(err)
-	}
-	tmplConfig.MsgBufferSize = 100
-	configs, err := createConfigs(tmplConfig, tmpDir, b.Name(), 1, 2)
-	if err != nil {
-		b.Fatal(err)
-	}
+
 	transports := map[uint64]*transport{}
-	for _, config := range configs {
-		tr, err := newTransport(config)
+	for _, id := range []uint64{1, 2} {
+		tConfig := NewTransportConfig(id, addresses)
+		tr, err := tConfig.build()
 		if err != nil {
 			b.Fatal(err)
 		}
-		transports[config.ID] = tr
+		defer tr.stop()
+		transports[id] = tr
 	}
-	done := make(chan error)
+
+	done := make(chan struct{})
 	for _, tr := range transports {
 		go func(tr *transport) {
-			done <- tr.start()
+			tr.start()
+			done <- struct{}{}
 		}(tr)
 	}
-	for i := uint64(1); i <= 2; i++ {
+	for range []uint64{1, 2} {
 		<-done
 	}
-	close(done)
 
-	// Start the benchmark
+	// Benchmark
 	tr1 := transports[1]
 	tr2 := transports[2]
-	msgIn := raftpb.Message{
-		From: 1,
-		To:   2,
-	}
-	var msgOut raftpb.Message
-	b.SetBytes(int64(2 * msgIn.Size()))
+	msg := raftpb.Message{From: 1, To: 2}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		// latency: ~21us per send-then-receive op
-		// throughput: 95000 messages
-		tr1.sendChan <- msgIn
-		msgOut = <-tr2.recvChan
-	}
-	b.StopTimer()
-	b.Log(msgIn.Size())
-	b.Log(msgOut)
-
-	// cleanup
-	for _, tr := range transports {
-		_ = tr.stop()
+		tr1.sendChan <- msg
+		<-tr2.recvChan
 	}
 }
 
-func Test_3NodeStartup(t *testing.T) {
-	tmpDir, err := createTmpDir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	logCfg := zap.NewProductionConfig()
-	logger, err := logCfg.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	tmplConfig := Configuration{
-		TickPeriod:             time.Millisecond,
-		MinElectionTicks:       10,
-		MaxElectionTicks:       20,
-		HeartbeatTicks:         1,
-		Consistency:            ConsistencySerializable,
-		MsgBufferSize:          8,
-		DialTimeout:            time.Millisecond,
-		ConnectionAttemptDelay: time.Millisecond,
-		SendTimeout:            time.Millisecond,
-		GRPCOptions: []GRPCOption{
-			WithGRPCDialOption{Opt: grpc.WithInsecure()},
+func Test_3Node_Linearizable_RoundRobin(t *testing.T) {
+	// Spin 3 nodes
+	nodes, apps := spinUpNodes(
+		t,
+		newCommitLog,
+		[]uint64{1, 2, 3},
+		[]ProtocolConfigOption{
+			WithConsistency(ConsistencyLinearizable),
+			// AddProtocolLogger(),
 		},
-		Logger: logger,
-	}
-	configs, err := createConfigs(tmplConfig, tmpDir, t.Name(), 1, 2, 3)
-	if err != nil {
-		t.Fatal(err)
+		[]TransportConfigOption{
+			// AddTransportLogger(),
+		},
+		[]NodeConfigOption{
+			// AddNodeLogger(),
+		})
+	defer stopAllNodes(t, nodes)
+
+	// connect the commitLog to its corresponding node
+	for id := range apps {
+		cl := apps[id].(*commitLog)
+		cl.node = nodes[id]
 	}
 
-	// hack: use 1 fake application for all three nodes
-	app := &fakeApplication{}
+	errChan := make(chan error)
+	stopChan := make(chan struct{})
+	for id, app := range apps {
+		cl := app.(*commitLog)
+		go func(id uint64, cl *commitLog) {
+			x := 0
+			for {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				y, err := cl.getLatest(ctx)
+				cancel()
+				if err == nil {
+					if y < x {
+						errChan <- fmt.Errorf("app %d read %d after reading %d", id, y, x)
+						return
+					}
+					t.Logf("app %d: x = %d, y = %d", id, x, y)
+					x = y
+				} else {
+					t.Logf("app %d errored: %v", id, err)
+				}
 
-	nodes := map[uint64]*Node{}
-	for _, config := range configs {
-		node, err := NewNode(config, app)
+				select {
+				case <-stopChan:
+					errChan <- nil
+					return
+				case <-time.After(time.Second):
+					// rate limit
+				}
+			}
+		}(id, cl)
+	}
+
+	// Choose in round-robin which Raft node to write monotonically increasing number
+	go func() {
+		id := uint64(1)
+		i := 1
+		for i <= 5 {
+			cl := apps[id].(*commitLog)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			if err := cl.append(ctx, i); err != nil {
+				t.Logf("app %d errored on i = %d: %v", id, i, err)
+			} else {
+				i++
+			}
+			cancel()
+			id++
+			if id == 4 {
+				id = 1
+			}
+		}
+		for range []uint64{1, 2, 3} {
+			stopChan <- struct{}{}
+		}
+	}()
+
+	select {
+	case err := <-errChan:
 		if err != nil {
 			t.Fatal(err)
 		}
-		nodes[config.ID] = node
-	}
-
-	done := make(chan error)
-	for _, node := range nodes {
-		go func(node *Node) {
-			err := node.Start()
-			done <- err
-		}(node)
-	}
-
-	for i := 0; i < 3; i++ {
-		err := <-done
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	// simulate passive cluster
-	time.Sleep(100 * time.Millisecond)
-
-	for _, node := range nodes {
-		err := node.Stop()
-		if err != nil {
-			fmt.Print(err)
-		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("timed out after 30 seconds")
 	}
 }
 
