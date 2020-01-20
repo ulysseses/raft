@@ -82,12 +82,15 @@ func main() {
 	pConfig := raft.NewProtocolConfig(
 		id,
 		raft.WithConsistency(consistency),
+		raft.AddProtocolLogger(),
 		raft.WithProtocolDebug(debug))
 	tConfig := raft.NewTransportConfig(
 		id, addresses,
+		raft.AddTransportLogger(),
 		raft.WithTransportDebug(debug))
 	nConfig := raft.NewNodeConfig(
 		id,
+		raft.AddNodeLogger(),
 		raft.WithNodeDebug(debug))
 
 	kvStore := newKVStore()
@@ -96,6 +99,13 @@ func main() {
 		zap.L().Fatal("could not start Raft node", zap.Error(err))
 	}
 	kvStore.node = node
+
+	node.Start()
+	defer func() {
+		if err := node.Stop(); err != nil {
+			zap.L().Error("node stopped with error", zap.Error(err))
+		}
+	}()
 
 	httpKVAPI := &httpKVAPI{
 		kvStore:        kvStore,

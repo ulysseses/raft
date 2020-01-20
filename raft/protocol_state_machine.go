@@ -9,52 +9,6 @@ import (
 	"github.com/ulysseses/raft/raftpb"
 )
 
-// Consistency is the consistency mode that Raft operations should support.
-type Consistency uint8
-
-const (
-	// ConsistencySerializable follows the serializable consistency model.
-	ConsistencySerializable Consistency = iota
-	// ConsistencyLinearizable follows the linearizable consistency model.
-	ConsistencyLinearizable
-)
-
-func (c Consistency) String() string {
-	switch c {
-	case ConsistencySerializable:
-		return "ConsistencySerializable"
-	case ConsistencyLinearizable:
-		return "ConsistencyLinearizable"
-	default:
-		panic("")
-	}
-}
-
-// Role can be follower, candidate, or leader.
-type Role uint8
-
-const (
-	// RoleFollower is the follower role.
-	RoleFollower Role = iota
-	// RoleCandidate is the candidate role.
-	RoleCandidate
-	// RoleLeader is the leader role.
-	RoleLeader
-)
-
-func (r Role) String() string {
-	switch r {
-	case RoleFollower:
-		return "RoleFollower"
-	case RoleCandidate:
-		return "RoleCandidate"
-	case RoleLeader:
-		return "RoleLeader"
-	default:
-		panic("")
-	}
-}
-
 // protocolStateMachine represents the Raft Protocol state machine of a Raft node.
 // It has a central event loop that interacts with a heartbeat ticker, election ticker,
 // and Raft protocol messages sent/received over the transport network.

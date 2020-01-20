@@ -19,19 +19,19 @@ go build
 ./server \
   -addr :3001 \
   -id 1 \
-  -peerAddresses "1,tcp://localhost:8081|2,tcp://localhost:8082|3,tcp://localhost:8083"
+  -addresses "1,tcp://localhost:8081|2,tcp://localhost:8082|3,tcp://localhost:8083"
 
 # in another process
 ./server \
   -addr :3002 \
   -id 2 \
-  -peerAddresses "1,tcp://localhost:8081|2,tcp://localhost:8082|3,tcp://localhost:8083"
+  -addresses "1,tcp://localhost:8081|2,tcp://localhost:8082|3,tcp://localhost:8083"
 
 # in yet another process
 ./server \
   -addr :3003 \
   -id 3 \
-  -peerAddresses "1,tcp://localhost:8081|2,tcp://localhost:8082|3,tcp://localhost:8083"
+  -addresses "1,tcp://localhost:8081|2,tcp://localhost:8082|3,tcp://localhost:8083"
 ```
 
 You can perform set & get operations against `/store`, e.g.

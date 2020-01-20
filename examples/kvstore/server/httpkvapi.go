@@ -13,7 +13,6 @@ import (
 type httpKVAPI struct {
 	kvStore                     *kvStore
 	logger                      *zap.Logger
-	sugaredLogger               *zap.SugaredLogger
 	readTimeout, proposeTimeout time.Duration
 }
 
@@ -83,7 +82,7 @@ func (h *httpKVAPI) handleState(ctx *fasthttp.RequestCtx) {
 		h.logger.Error(
 			"failed to marshal state",
 			zap.Object("state", state), zap.Error(err))
-		ctx.Error("Failed to GET", http.StatusInternalServerError)
+		ctx.Error(err.Error(), http.StatusInternalServerError)
 	}
 }
 
@@ -96,7 +95,7 @@ func (h *httpKVAPI) handleMembers(ctx *fasthttp.RequestCtx) {
 			"failed to marshal members",
 			zap.Reflect("members", members), zap.Error(err),
 		)
-		ctx.Error("Failed to GET", http.StatusInternalServerError)
+		ctx.Error(err.Error(), http.StatusInternalServerError)
 	}
 }
 

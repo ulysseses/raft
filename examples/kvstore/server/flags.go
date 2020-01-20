@@ -38,7 +38,7 @@ type consistencyValue struct {
 	c *raft.Consistency
 }
 
-func (v consistencyValue) String() string {
+func (v *consistencyValue) String() string {
 	switch *v.c {
 	case raft.ConsistencySerializable:
 		return "serializable"
@@ -49,7 +49,7 @@ func (v consistencyValue) String() string {
 	}
 }
 
-func (v consistencyValue) Set(arg string) error {
+func (v *consistencyValue) Set(arg string) error {
 	switch arg {
 	case "serializable":
 		*v.c = raft.ConsistencySerializable

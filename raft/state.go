@@ -1,8 +1,104 @@
 package raft
 
 import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
 	"go.uber.org/zap/zapcore"
 )
+
+// Consistency is the consistency mode that Raft operations should support.
+type Consistency uint8
+
+const (
+	// ConsistencySerializable follows the serializable consistency model.
+	ConsistencySerializable Consistency = iota
+	// ConsistencyLinearizable follows the linearizable consistency model.
+	ConsistencyLinearizable
+)
+
+func (c Consistency) String() string {
+	switch c {
+	case ConsistencySerializable:
+		return "serializable"
+	case ConsistencyLinearizable:
+		return "linearizable"
+	default:
+		panic("")
+	}
+}
+
+// MarshalJSON implements json.Marshaler for Consistency
+func (c Consistency) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf(`"%s"`, c.String())), nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler for Consistency
+func (c *Consistency) UnmarshalJSON(b []byte) error {
+	var j string
+	if err := json.Unmarshal(b, &j); err != nil {
+		return err
+	}
+	switch strings.ToLower(j) {
+	case "serializable":
+		*c = ConsistencySerializable
+	case "linearizable":
+		*c = ConsistencyLinearizable
+	default:
+		return fmt.Errorf("unrecognized consistency: %s", j)
+	}
+	return nil
+}
+
+// Role can be follower, candidate, or leader.
+type Role uint8
+
+const (
+	// RoleFollower is the follower role.
+	RoleFollower Role = iota
+	// RoleCandidate is the candidate role.
+	RoleCandidate
+	// RoleLeader is the leader role.
+	RoleLeader
+)
+
+func (r Role) String() string {
+	switch r {
+	case RoleFollower:
+		return "follower"
+	case RoleCandidate:
+		return "candidate"
+	case RoleLeader:
+		return "leader"
+	default:
+		panic("")
+	}
+}
+
+// MarshalJSON implements json.Marshaler for Role
+func (r Role) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf(`"%s"`, r.String())), nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler for Role
+func (r *Role) UnmarshalJSON(b []byte) error {
+	var j string
+	if err := json.Unmarshal(b, &j); err != nil {
+		return err
+	}
+	switch strings.ToLower(j) {
+	case "follower":
+		*r = RoleFollower
+	case "candidate":
+		*r = RoleCandidate
+	case "leader":
+		*r = RoleLeader
+	default:
+		return fmt.Errorf("unrecognized role: %s", j)
+	}
+	return nil
+}
 
 // State contains all state of a Node.
 type State struct {

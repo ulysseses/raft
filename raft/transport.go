@@ -197,8 +197,14 @@ func (p *peer) connectLoop() {
 		default:
 		}
 
+		// https://github.com/grpc/grpc/blob/master/doc/naming.md
+		gRPCCompatibleAddr := p.addr
+		if strings.HasPrefix(gRPCCompatibleAddr, "tcp://") {
+			gRPCCompatibleAddr = strings.TrimPrefix(gRPCCompatibleAddr, "tcp://")
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), p.dialTimeout)
-		conn, err := grpc.DialContext(ctx, p.addr, p.dialOptions...)
+		conn, err := grpc.DialContext(ctx, gRPCCompatibleAddr, p.dialOptions...)
 		cancel()
 		if err != nil {
 			if p.debug && p.l() {
@@ -211,7 +217,11 @@ func (p *peer) connectLoop() {
 		p.stream, err = raftpb.NewRaftProtocolClient(conn).
 			Communicate(context.Background(), p.callOptions...)
 		if err != nil {
-			panic(err)
+			if p.debug && p.l() {
+				p.logger.Debug("will retry failed connection", zap.Error(err))
+			}
+			time.Sleep(p.reconnectDelay)
+			continue
 		}
 
 		break
