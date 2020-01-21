@@ -116,8 +116,8 @@ func (t *transport) sendLoop() {
 			select {
 			case p.sendChan <- msg:
 			default:
-				if t.l() {
-					t.logger.Info(
+				if t.debug && t.l() {
+					t.logger.Debug(
 						"could not send",
 						zap.Uint64("to", msg.To), zap.String("type", msg.Type.String()))
 				}

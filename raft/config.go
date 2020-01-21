@@ -103,11 +103,11 @@ func (c *ProtocolConfig) build(tr *transport) (*protocolStateMachine, error) {
 
 		// proposals
 		propReqChan:  make(chan proposalRequest),
-		propRespChan: make(chan proposalResponse),
+		propRespChan: make(chan proposalResponse, 1),
 
 		// reads
 		readReqChan:  make(chan readRequest),
-		readRespChan: make(chan readResponse),
+		readRespChan: make(chan readResponse, 1),
 
 		// applies
 		commitChan: make(chan uint64),

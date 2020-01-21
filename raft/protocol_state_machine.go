@@ -243,7 +243,7 @@ func (psm *protocolStateMachine) processAppResp(msg msgAppResp) {
 		if readContext.Acks >= psm.state.QuorumSize {
 			if msg.proxy == psm.state.ID {
 				// respond to own (leader's) original read request
-				psm.endPendingRead()
+				psm.endPendingRead(msg.tid)
 			} else {
 				// respond to original read request
 				psm.sendChan <- buildReadResp(
@@ -270,19 +270,12 @@ func (psm *protocolStateMachine) processRead(msg msgRead) {
 		proxyPeer.ReadContext.Acks = 1
 		proxyPeer.ReadContext.Index = psm.state.Commit
 
-		// shortcut: 1-node cluster
-		if psm.state.QuorumSize == 1 {
-			psm.endPendingRead()
-			return
-		}
 		psm.heartbeatWithContext(msg.tid, msg.from)
 	}
 }
 
 func (psm *protocolStateMachine) processReadResp(msg msgReadResp) {
-	if psm.state.ReadContext.TID == msg.tid {
-		psm.endPendingRead()
-	}
+	psm.endPendingRead(msg.tid)
 }
 
 func (psm *protocolStateMachine) processProp(msg msgProp) {
@@ -378,14 +371,15 @@ func (psm *protocolStateMachine) read(req readRequest) {
 
 	// serializable shortcut
 	if psm.state.Consistency == ConsistencySerializable {
-		psm.endPendingRead()
+		psm.state.ReadContext.Index = psm.state.Commit
+		psm.endPendingRead(psm.state.ReadContext.TID)
 		return
 	}
 
 	if psm.state.Role == RoleLeader {
 		// shortcut: 1-node cluster
 		if psm.state.QuorumSize == 1 {
-			psm.endPendingRead()
+			psm.endPendingRead(psm.state.ReadContext.TID)
 			return
 		}
 		// ping everyone
@@ -535,15 +529,21 @@ func (psm *protocolStateMachine) endPendingProposal() {
 }
 
 // ack (nil error) or cancel (non-nil error) any pending read requests
-func (psm *protocolStateMachine) endPendingRead() {
-	if psm.debug && psm.l() {
-		psm.logger.Debug("ending potentially pending read")
+func (psm *protocolStateMachine) endPendingRead(tid int64) {
+	if tid != psm.state.ReadContext.TID {
+		if psm.debug && psm.l() {
+			psm.logger.Debug("TID has moved on", zap.Int64("oldTID", tid), zap.Int64("newTID", psm.state.ReadContext.TID))
+		}
+		return
 	}
-	result := readResponse{
+	if psm.debug && psm.l() {
+		psm.logger.Debug("ending pending read")
+	}
+	resp := readResponse{
 		index: psm.state.ReadContext.Index,
 	}
 	select {
-	case psm.readRespChan <- result:
+	case psm.readRespChan <- resp:
 	default:
 	}
 	// zero out pending read

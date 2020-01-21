@@ -59,6 +59,17 @@ func (n *Node) Members() map[uint64]MemberState {
 func (n *Node) propose(ctx context.Context, data []byte) error {
 	n.proposeMu.Lock()
 	done := ctx.Done()
+
+	// drain
+	select {
+	case <-n.psm.propRespChan:
+	case <-done:
+		n.proposeMu.Unlock()
+		return ctx.Err()
+	default:
+	}
+
+	// send proposal request
 	select {
 	case n.psm.propReqChan <- proposalRequest{data: data}:
 	case <-done:
@@ -66,6 +77,7 @@ func (n *Node) propose(ctx context.Context, data []byte) error {
 		return ctx.Err()
 	}
 
+	// get proposal response
 	select {
 	case _ = <-n.psm.propRespChan:
 		n.proposeMu.Unlock()
@@ -85,6 +97,17 @@ func (n *Node) propose(ctx context.Context, data []byte) error {
 func (n *Node) read(ctx context.Context) (uint64, error) {
 	n.readMu.Lock()
 	done := ctx.Done()
+
+	// drain
+	select {
+	case <-n.psm.readRespChan:
+	case <-done:
+		n.readMu.Unlock()
+		return 0, ctx.Err()
+	default:
+	}
+
+	// send read request
 	select {
 	case n.psm.readReqChan <- readRequest{}:
 	case <-done:
@@ -92,10 +115,11 @@ func (n *Node) read(ctx context.Context) (uint64, error) {
 		return 0, ctx.Err()
 	}
 
+	// wait for response
 	select {
-	case readResult := <-n.psm.readRespChan:
+	case resp := <-n.psm.readRespChan:
 		n.readMu.Unlock()
-		return readResult.index, nil
+		return resp.index, nil
 	case <-done:
 		n.readMu.Unlock()
 		return 0, ctx.Err()

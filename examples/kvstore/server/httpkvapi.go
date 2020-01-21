@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/valyala/fasthttp"
+	"github.com/valyala/fasthttp/pprofhandler"
 	"go.uber.org/zap"
 )
 
@@ -18,8 +20,14 @@ type httpKVAPI struct {
 
 // Route routes to the correct FastHTTP handler
 func (h *httpKVAPI) Route(ctx *fasthttp.RequestCtx) {
-	h.logReq(ctx)
-	switch string(ctx.Path()) {
+	if h.l() {
+		h.logger.Info(
+			string(ctx.Path()),
+			zap.String("method", string(ctx.Method())),
+			zap.String("queryArgs", ctx.QueryArgs().String()))
+	}
+	path := string(ctx.Path())
+	switch path {
 	case "/store":
 		if ctx.IsPut() {
 			h.handleSet(ctx)
@@ -39,6 +47,10 @@ func (h *httpKVAPI) Route(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	default:
+		if strings.HasPrefix(path, "/debug/pprof/") {
+			pprofhandler.PprofHandler(ctx)
+			return
+		}
 	}
 	ctx.Response.Header.Set("Allow", "PUT, GET")
 	ctx.Error("Method not allowed", http.StatusMethodNotAllowed)
@@ -52,7 +64,10 @@ func (h *httpKVAPI) handleSet(fctx *fasthttp.RequestCtx) {
 	err := h.kvStore.set(ctx, string(k), string(v))
 	cancel()
 	if err != nil {
-		h.logger.Error("", zap.Error(err))
+		if h.l() {
+			h.logger.Error("", zap.Error(err))
+		}
+		fctx.Error(err.Error(), http.StatusInternalServerError)
 	}
 }
 
@@ -62,11 +77,15 @@ func (h *httpKVAPI) handleGet(fctx *fasthttp.RequestCtx) {
 	v, ok, err := h.kvStore.get(ctx, k)
 	cancel()
 	if err != nil {
-		h.logger.Error("", zap.Error(err))
+		if h.l() {
+			h.logger.Error("get failed", zap.Error(err))
+		}
 		fctx.Error(err.Error(), http.StatusInternalServerError)
 		return
 	}
-	h.logger.Info("", zap.String("k", k), zap.String("v", v), zap.Bool("ok", ok))
+	if h.l() {
+		h.logger.Info("", zap.String("k", k), zap.String("v", v), zap.Bool("ok", ok))
+	}
 	if ok {
 		fctx.WriteString(v)
 	} else {
@@ -79,9 +98,11 @@ func (h *httpKVAPI) handleState(ctx *fasthttp.RequestCtx) {
 	if b, err := json.Marshal(state); err == nil {
 		ctx.Write(b)
 	} else {
-		h.logger.Error(
-			"failed to marshal state",
-			zap.Object("state", state), zap.Error(err))
+		if h.l() {
+			h.logger.Error(
+				"failed to marshal state",
+				zap.Object("state", state), zap.Error(err))
+		}
 		ctx.Error(err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -91,17 +112,16 @@ func (h *httpKVAPI) handleMembers(ctx *fasthttp.RequestCtx) {
 	if b, err := json.Marshal(members); err == nil {
 		ctx.Write(b)
 	} else {
-		h.logger.Error(
-			"failed to marshal members",
-			zap.Reflect("members", members), zap.Error(err),
-		)
+		if h.l() {
+			h.logger.Error(
+				"failed to marshal members",
+				zap.Reflect("members", members), zap.Error(err),
+			)
+		}
 		ctx.Error(err.Error(), http.StatusInternalServerError)
 	}
 }
 
-func (h *httpKVAPI) logReq(ctx *fasthttp.RequestCtx) {
-	h.logger.Info(
-		string(ctx.Path()),
-		zap.String("method", string(ctx.Method())),
-		zap.String("queryArgs", ctx.QueryArgs().String()))
+func (h *httpKVAPI) l() bool {
+	return h.logger != nil
 }
