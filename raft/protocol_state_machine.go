@@ -369,13 +369,6 @@ func (psm *protocolStateMachine) propose(req proposalRequest) {
 func (psm *protocolStateMachine) read(req readRequest) {
 	psm.state.ReadContext.TID++
 
-	// serializable shortcut
-	if psm.state.Consistency == ConsistencySerializable {
-		psm.state.ReadContext.Index = psm.state.Commit
-		psm.endPendingRead(psm.state.ReadContext.TID)
-		return
-	}
-
 	if psm.state.Role == RoleLeader {
 		// shortcut: 1-node cluster
 		if psm.state.QuorumSize == 1 {

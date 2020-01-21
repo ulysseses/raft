@@ -36,6 +36,9 @@ func (n *Node) Propose(ctx context.Context, data []byte) error {
 
 // Read should be called by the client/application.
 func (n *Node) Read(ctx context.Context) error {
+	if n.psm.state.Consistency == ConsistencySerializable {
+		return nil
+	}
 	readIndex, err := n.read(ctx)
 	if err != nil {
 		return err
