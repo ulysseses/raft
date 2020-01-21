@@ -68,13 +68,10 @@ func (c *ProtocolConfig) Verify() error {
 	return nil
 }
 
-func (c *ProtocolConfig) build(tr *transport) (*protocolStateMachine, error) {
+// Build builds a ProtocolStateMachine from configuration
+func (c *ProtocolConfig) Build(tr Transport) (*ProtocolStateMachine, error) {
 	if err := c.Verify(); err != nil {
 		return nil, err
-	}
-
-	if _, ok := tr.peers[c.ID]; ok {
-		return nil, fmt.Errorf("Raft node ID %d is listed as a peer in the node's transport", c.ID)
 	}
 
 	heartbeatTicker := c.HeartbeatTicker
@@ -85,21 +82,22 @@ func (c *ProtocolConfig) build(tr *transport) (*protocolStateMachine, error) {
 	if electionTicker == nil {
 		electionTicker = newElectionTicker(c.TickPeriod, c.MinElectionTicks, c.MaxElectionTicks)
 	}
-	clusterSize := len(tr.peers) + 1
+	mIDs := tr.memberIDs()
+	clusterSize := len(mIDs)
 	members := map[uint64]*MemberState{c.ID: &MemberState{ID: c.ID}}
-	for id := range tr.peers {
+	for _, id := range mIDs {
 		members[id] = &MemberState{ID: id}
 	}
 
-	psm := protocolStateMachine{
+	psm := ProtocolStateMachine{
 		// ticker
 		heartbeatTicker: heartbeatTicker,
 		electionTicker:  electionTicker,
 		heartbeatC:      nil,
 
 		// network IO
-		recvChan: tr.recvChan,
-		sendChan: tr.sendChan,
+		recvChan: tr.recv(),
+		sendChan: tr.send(),
 
 		// proposals
 		propReqChan:  make(chan proposalRequest),
@@ -374,7 +372,8 @@ func (c *TransportConfig) Verify() error {
 	return nil
 }
 
-func (c *TransportConfig) build() (*transport, error) {
+// Build builds a Transport from configuration.
+func (c *TransportConfig) Build() (Transport, error) {
 	if err := c.Verify(); err != nil {
 		return nil, err
 	}
@@ -409,9 +408,10 @@ func (c *TransportConfig) build() (*transport, error) {
 			debug:          c.Debug,
 		}
 	}
-	t := transport{
+	t := gRPCTransport{
 		lis:        lis,
 		grpcServer: grpc.NewServer(c.ServerOptions...),
+		id:         c.ID,
 		peers:      peers,
 
 		recvChan: make(chan raftpb.Message),
@@ -616,21 +616,11 @@ func (c *NodeConfig) Verify() error {
 
 // Build builds a Raft node.
 func (c *NodeConfig) Build(
-	pConfig *ProtocolConfig,
-	tConfig *TransportConfig,
+	psm *ProtocolStateMachine,
+	tr Transport,
 	a Application,
 ) (*Node, error) {
 	if err := c.Verify(); err != nil {
-		return nil, err
-	}
-
-	tr, err := tConfig.build()
-	if err != nil {
-		return nil, err
-	}
-
-	psm, err := pConfig.build(tr)
-	if err != nil {
 		return nil, err
 	}
 
@@ -640,6 +630,7 @@ func (c *NodeConfig) Build(
 		stopAppChan:    make(chan struct{}),
 		stopAppErrChan: make(chan error),
 		applyFunc:      a.Apply,
+		logger:         c.Logger,
 	}
 
 	return &n, nil

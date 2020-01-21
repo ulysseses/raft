@@ -87,26 +87,23 @@ func createUnixSockets(
 
 func spinUpNodes(
 	t *testing.T,
-	newApp func(uint64) Application,
 	ids []uint64,
 	pOpts []ProtocolConfigOption,
-	tOpts []TransportConfigOption,
 	nOpts []NodeConfigOption,
+	newApp func(uint64) Application,
 ) (map[uint64]*Node, map[uint64]Application) {
-	addresses, cleanup, err := createUnixSockets(t.Name(), ids...)
-	defer cleanup()
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	nodes := map[uint64]*Node{}
 	apps := map[uint64]Application{}
+	trs := newFakeTransports(ids...)
 	for _, id := range ids {
-		tConfig := NewTransportConfig(id, addresses, tOpts...)
 		pConfig := NewProtocolConfig(id, pOpts...)
+		psm, err := pConfig.Build(trs[id])
+		if err != nil {
+			t.Fatal(err)
+		}
 		nConfig := NewNodeConfig(id, nOpts...)
 		app := newApp(id)
-		node, err := nConfig.Build(pConfig, tConfig, app)
+		node, err := nConfig.Build(psm, trs[id], app)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -139,35 +136,35 @@ func stopAllNodes(t *testing.T, nodes map[uint64]*Node) {
 
 func Test_3Node_StartAndStop(t *testing.T) {
 	// Spin 3 nodes
-	nodes, _ := spinUpNodes(t, newNoOpApp, []uint64{1, 2, 3}, nil, nil, nil)
+	nodes, _ := spinUpNodes(t, []uint64{1, 2, 3}, nil, nil, newNoOpApp)
 	defer stopAllNodes(t, nodes)
 
 	// Simulate passive cluster
-	time.Sleep(3 * time.Second)
+	time.Sleep(2 * time.Second)
 }
 
 // Benchmark round trip time
-func Benchmark_Transport_RTT(b *testing.B) {
+func Benchmark_gRPCTransport_RTT(b *testing.B) {
 	addresses, cleanup, err := createUnixSockets(b.Name(), 1, 2)
 	defer cleanup()
 	if err != nil {
 		b.Fatal(err)
 	}
 
-	transports := map[uint64]*transport{}
+	trs := map[uint64]Transport{}
 	for _, id := range []uint64{1, 2} {
 		tConfig := NewTransportConfig(id, addresses)
-		tr, err := tConfig.build()
+		tr, err := tConfig.Build()
 		if err != nil {
 			b.Fatal(err)
 		}
 		defer tr.stop()
-		transports[id] = tr
+		trs[id] = tr
 	}
 
 	done := make(chan struct{})
-	for _, tr := range transports {
-		go func(tr *transport) {
+	for _, tr := range trs {
+		go func(tr Transport) {
 			tr.start()
 			done <- struct{}{}
 		}(tr)
@@ -177,13 +174,13 @@ func Benchmark_Transport_RTT(b *testing.B) {
 	}
 
 	// Benchmark
-	tr1 := transports[1]
-	tr2 := transports[2]
+	sendC1 := trs[1].send()
+	recvC2 := trs[2].recv()
 	msg := raftpb.Message{From: 1, To: 2}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		tr1.sendChan <- msg
-		<-tr2.recvChan
+		sendC1 <- msg
+		<-recvC2
 	}
 }
 
@@ -191,18 +188,15 @@ func Test_3Node_Linearizable_RoundRobin(t *testing.T) {
 	// Spin 3 nodes
 	nodes, apps := spinUpNodes(
 		t,
-		newCommitLog,
 		[]uint64{1, 2, 3},
 		[]ProtocolConfigOption{
 			WithConsistency(ConsistencyLinearizable),
 			// AddProtocolLogger(),
 		},
-		[]TransportConfigOption{
-			// AddTransportLogger(),
-		},
 		[]NodeConfigOption{
 			// AddNodeLogger(),
-		})
+		},
+		newCommitLog)
 	defer stopAllNodes(t, nodes)
 
 	// connect the commitLog to its corresponding node
@@ -271,8 +265,8 @@ func Test_3Node_Linearizable_RoundRobin(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("timed out after 30 seconds")
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out after 10 seconds")
 	}
 }
 

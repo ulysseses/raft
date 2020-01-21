@@ -12,11 +12,30 @@ import (
 	"google.golang.org/grpc"
 )
 
-// transport is resposible for network interaction of the Raft cluster.
-type transport struct {
+// Transport sends and receives Raft protocol messages between Raft nodes of the cluster.
+type Transport interface {
+	// recv returns a channel to "read" messages from the network/cluster.
+	recv() <-chan raftpb.Message
+
+	// send returns a channel to "send" messages out to the network/cluster.
+	send() chan<- raftpb.Message
+
+	// memberIDs returns a slice of the IDs of all Raft nodes in the cluster.
+	memberIDs() []uint64
+
+	// start starts the transporter
+	start()
+
+	// stop stops the transporter
+	stop()
+}
+
+// gRPCTransport is resposible for network interaction of the Raft cluster.
+type gRPCTransport struct {
 	raftpb.UnimplementedRaftProtocolServer
 	lis        net.Listener
 	grpcServer *grpc.Server
+	id         uint64
 	peers      map[uint64]*peer
 
 	recvChan chan raftpb.Message
@@ -27,8 +46,27 @@ type transport struct {
 	debug  bool
 }
 
+// recv implements Transporter for gRPCTransport
+func (t *gRPCTransport) recv() <-chan raftpb.Message {
+	return t.recvChan
+}
+
+// send implements Transporter for gRPCTransport
+func (t *gRPCTransport) send() chan<- raftpb.Message {
+	return t.sendChan
+}
+
+// memberIDs implements Transporter for gRPCTransport
+func (t *gRPCTransport) memberIDs() []uint64 {
+	mIDs := []uint64{t.id}
+	for peerID := range t.peers {
+		mIDs = append(mIDs, peerID)
+	}
+	return mIDs
+}
+
 // start starts the node's gRPC server and clients to all other peer servers.
-func (t *transport) start() {
+func (t *gRPCTransport) start() {
 	// start Communicate RPC
 	if t.l() {
 		t.logger.Info("starting gRPC server")
@@ -63,7 +101,7 @@ func (t *transport) start() {
 }
 
 // stop stops the Raft node's gRPC server and clients to peer servers.
-func (t *transport) stop() {
+func (t *gRPCTransport) stop() {
 	// Stop Communicate RPC and sendLoop
 	t.grpcServer.Stop()
 	for i := 1; i <= 2; i++ {
@@ -76,7 +114,7 @@ func (t *transport) stop() {
 }
 
 // Communicate implements RaftProtocolServer for Transport.
-func (t *transport) Communicate(stream raftpb.RaftProtocol_CommunicateServer) error {
+func (t *gRPCTransport) Communicate(stream raftpb.RaftProtocol_CommunicateServer) error {
 	var (
 		recvChan chan<- raftpb.Message = t.recvChan
 		stopChan <-chan struct{}       = t.stopChan
@@ -99,7 +137,7 @@ func (t *transport) Communicate(stream raftpb.RaftProtocol_CommunicateServer) er
 	}
 }
 
-func (t *transport) sendLoop() {
+func (t *gRPCTransport) sendLoop() {
 	var (
 		msg      raftpb.Message
 		stopChan <-chan struct{} = t.stopChan
@@ -128,7 +166,7 @@ func (t *transport) sendLoop() {
 	}
 }
 
-func (t *transport) l() bool {
+func (t *gRPCTransport) l() bool {
 	return t.logger != nil
 }
 

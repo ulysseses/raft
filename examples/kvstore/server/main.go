@@ -154,15 +154,22 @@ func main() {
 		tConfigOpts = append(tConfigOpts, raft.AddTransportLogger())
 		nConfigOpts = append(nConfigOpts, raft.AddNodeLogger())
 	}
-
 	pConfig := raft.NewProtocolConfig(id, pConfigOpts...)
 	tConfig := raft.NewTransportConfig(id, addresses, tConfigOpts...)
 	nConfig := raft.NewNodeConfig(id, nConfigOpts...)
 
-	kvStore := newKVStore()
-	node, err := nConfig.Build(pConfig, tConfig, kvStore)
+	tr, err := tConfig.Build()
 	if err != nil {
-		gl.Fatal("could not start Raft node", zap.Error(err))
+		gl.Fatal("Failed to build Transport", zap.Error(err))
+	}
+	psm, err := pConfig.Build(tr)
+	if err != nil {
+		gl.Fatal("Failed to build ProtocolStateMachine", zap.Error(err))
+	}
+	kvStore := newKVStore()
+	node, err := nConfig.Build(psm, tr, kvStore)
+	if err != nil {
+		gl.Fatal("Failed to build Node", zap.Error(err))
 	}
 	kvStore.node = node
 

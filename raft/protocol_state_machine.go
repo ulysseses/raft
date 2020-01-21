@@ -9,10 +9,10 @@ import (
 	"github.com/ulysseses/raft/raftpb"
 )
 
-// protocolStateMachine represents the Raft Protocol state machine of a Raft node.
+// ProtocolStateMachine represents the Raft Protocol state machine of a Raft node.
 // It has a central event loop that interacts with a heartbeat ticker, election ticker,
 // and Raft protocol messages sent/received over the transport network.
-type protocolStateMachine struct {
+type ProtocolStateMachine struct {
 	// ticker
 	heartbeatTicker Ticker
 	electionTicker  Ticker
@@ -53,7 +53,7 @@ type protocolStateMachine struct {
 	debug  bool
 }
 
-func (psm *protocolStateMachine) run() {
+func (psm *ProtocolStateMachine) run() {
 	electionTickerC := psm.electionTicker.C()
 	for {
 		select {
@@ -95,7 +95,7 @@ func (psm *protocolStateMachine) run() {
 	}
 }
 
-func (psm *protocolStateMachine) hasQuorumAcks() bool {
+func (psm *ProtocolStateMachine) hasQuorumAcks() bool {
 	acks := 0
 	for _, p := range psm.members {
 		if p.ID == psm.state.ID {
@@ -109,7 +109,7 @@ func (psm *protocolStateMachine) hasQuorumAcks() bool {
 	return acks >= psm.state.QuorumSize
 }
 
-func (psm *protocolStateMachine) processMessage(msg raftpb.Message) {
+func (psm *ProtocolStateMachine) processMessage(msg raftpb.Message) {
 	if msg.Term < psm.state.Term {
 		if psm.debug && psm.l() {
 			psm.logger.Debug(
@@ -158,7 +158,7 @@ func (psm *protocolStateMachine) processMessage(msg raftpb.Message) {
 	}
 }
 
-func (psm *protocolStateMachine) processApp(msg msgApp) {
+func (psm *ProtocolStateMachine) processApp(msg msgApp) {
 	psm.state.Leader = msg.from
 	switch psm.state.Role {
 	case RoleFollower:
@@ -200,7 +200,7 @@ func (psm *protocolStateMachine) processApp(msg msgApp) {
 	}
 }
 
-func (psm *protocolStateMachine) processAppResp(msg msgAppResp) {
+func (psm *ProtocolStateMachine) processAppResp(msg msgAppResp) {
 	if psm.state.Role != RoleLeader {
 		return
 	}
@@ -263,7 +263,7 @@ func (psm *protocolStateMachine) processAppResp(msg msgAppResp) {
 	}
 }
 
-func (psm *protocolStateMachine) processRead(msg msgRead) {
+func (psm *ProtocolStateMachine) processRead(msg msgRead) {
 	if psm.state.Role == RoleLeader {
 		proxyPeer := psm.members[msg.from]
 		proxyPeer.ReadContext.TID = msg.tid
@@ -274,11 +274,11 @@ func (psm *protocolStateMachine) processRead(msg msgRead) {
 	}
 }
 
-func (psm *protocolStateMachine) processReadResp(msg msgReadResp) {
+func (psm *ProtocolStateMachine) processReadResp(msg msgReadResp) {
 	psm.endPendingRead(msg.tid)
 }
 
-func (psm *protocolStateMachine) processProp(msg msgProp) {
+func (psm *ProtocolStateMachine) processProp(msg msgProp) {
 	// cannot accept proposal if not leader
 	if psm.state.Role != RoleLeader {
 		return
@@ -297,14 +297,14 @@ func (psm *protocolStateMachine) processProp(msg msgProp) {
 		msg.tid, entry.Index, entry.Term)
 }
 
-func (psm *protocolStateMachine) processPropResp(msg msgPropResp) {
+func (psm *ProtocolStateMachine) processPropResp(msg msgPropResp) {
 	// check if the proposal response is the one we're looking for (equal unixNano)
 	if msg.tid == psm.state.ProposalContext.TID {
 		psm.state.ProposalContext.Index = msg.index
 	}
 }
 
-func (psm *protocolStateMachine) processVote(msg msgVote) {
+func (psm *ProtocolStateMachine) processVote(msg msgVote) {
 	if psm.state.Role != RoleFollower {
 		return
 	}
@@ -321,7 +321,7 @@ func (psm *protocolStateMachine) processVote(msg msgVote) {
 	}
 }
 
-func (psm *protocolStateMachine) processVoteResp(msg msgVoteResp) {
+func (psm *ProtocolStateMachine) processVoteResp(msg msgVoteResp) {
 	if psm.l() {
 		psm.logger.Info("got vote", zap.Uint64("from", msg.from), zap.Uint64("term", msg.term))
 	}
@@ -337,7 +337,7 @@ func (psm *protocolStateMachine) processVoteResp(msg msgVoteResp) {
 	}
 }
 
-func (psm *protocolStateMachine) propose(req proposalRequest) {
+func (psm *ProtocolStateMachine) propose(req proposalRequest) {
 	if psm.state.Role == RoleLeader {
 		entry := raftpb.Entry{
 			Index: psm.state.LastIndex + 1,
@@ -366,7 +366,7 @@ func (psm *protocolStateMachine) propose(req proposalRequest) {
 	}
 }
 
-func (psm *protocolStateMachine) read(req readRequest) {
+func (psm *ProtocolStateMachine) read(req readRequest) {
 	psm.state.ReadContext.TID++
 
 	if psm.state.Role == RoleLeader {
@@ -388,7 +388,7 @@ func (psm *protocolStateMachine) read(req readRequest) {
 	}
 }
 
-func (psm *protocolStateMachine) becomeFollower() {
+func (psm *ProtocolStateMachine) becomeFollower() {
 	if psm.l() {
 		psm.logger.Info("becoming follower", zap.Uint64("term", psm.state.Term))
 	}
@@ -401,7 +401,7 @@ func (psm *protocolStateMachine) becomeFollower() {
 	}
 }
 
-func (psm *protocolStateMachine) becomeCandidate() {
+func (psm *ProtocolStateMachine) becomeCandidate() {
 	if psm.l() {
 		psm.logger.Info("becoming candidate", zap.Uint64("newTerm", psm.state.Term+1))
 	}
@@ -431,7 +431,7 @@ func (psm *protocolStateMachine) becomeCandidate() {
 	}
 }
 
-func (psm *protocolStateMachine) becomeLeader() {
+func (psm *ProtocolStateMachine) becomeLeader() {
 	if psm.l() {
 		psm.logger.Info("becoming leader")
 	}
@@ -454,7 +454,7 @@ func (psm *protocolStateMachine) becomeLeader() {
 	psm.heartbeatC = psm.heartbeatTicker.C()
 }
 
-func (psm *protocolStateMachine) heartbeatWithEntries() {
+func (psm *ProtocolStateMachine) heartbeatWithEntries() {
 	for _, p := range psm.members {
 		if psm.state.ID == p.ID {
 			continue
@@ -474,7 +474,7 @@ func (psm *protocolStateMachine) heartbeatWithEntries() {
 	}
 }
 
-func (psm *protocolStateMachine) heartbeatWithContext(unixNano int64, proxy uint64) {
+func (psm *ProtocolStateMachine) heartbeatWithContext(unixNano int64, proxy uint64) {
 	for _, p := range psm.members {
 		if psm.state.ID == p.ID {
 			continue
@@ -488,7 +488,7 @@ func (psm *protocolStateMachine) heartbeatWithContext(unixNano int64, proxy uint
 }
 
 // Figure out the largest match index of a quorum so far.
-func (psm *protocolStateMachine) quorumMatchIndex() uint64 {
+func (psm *ProtocolStateMachine) quorumMatchIndex() uint64 {
 	matches := psm.quorumMatchIndexBuffer
 	i := 0
 	for _, p := range psm.members {
@@ -504,7 +504,7 @@ func (psm *protocolStateMachine) quorumMatchIndex() uint64 {
 	return matches[psm.state.QuorumSize-1]
 }
 
-func (psm *protocolStateMachine) endPendingProposal() {
+func (psm *ProtocolStateMachine) endPendingProposal() {
 	if psm.debug && psm.l() {
 		psm.logger.Debug("ending potentially pending proposal")
 	}
@@ -522,7 +522,7 @@ func (psm *protocolStateMachine) endPendingProposal() {
 }
 
 // ack (nil error) or cancel (non-nil error) any pending read requests
-func (psm *protocolStateMachine) endPendingRead(tid int64) {
+func (psm *ProtocolStateMachine) endPendingRead(tid int64) {
 	if tid != psm.state.ReadContext.TID {
 		if psm.debug && psm.l() {
 			psm.logger.Debug("TID has moved on", zap.Int64("oldTID", tid), zap.Int64("newTID", psm.state.ReadContext.TID))
@@ -545,7 +545,7 @@ func (psm *protocolStateMachine) endPendingRead(tid int64) {
 }
 
 // update commit and alert downstream application state machine
-func (psm *protocolStateMachine) updateCommit(newCommit uint64) {
+func (psm *ProtocolStateMachine) updateCommit(newCommit uint64) {
 	if psm.debug && psm.l() {
 		psm.logger.Debug(
 			"updating commit",
@@ -558,7 +558,7 @@ func (psm *protocolStateMachine) updateCommit(newCommit uint64) {
 	}
 }
 
-func (psm *protocolStateMachine) start() {
+func (psm *ProtocolStateMachine) start() {
 	if psm.l() {
 		psm.logger.Info("starting election timeout ticker")
 	}
@@ -573,7 +573,7 @@ func (psm *protocolStateMachine) start() {
 	go psm.run()
 }
 
-func (psm *protocolStateMachine) stop() {
+func (psm *ProtocolStateMachine) stop() {
 	if psm.l() {
 		psm.logger.Info("stopping raft state machine run loop...")
 	}
@@ -593,7 +593,7 @@ func (psm *protocolStateMachine) stop() {
 	}
 }
 
-func (psm *protocolStateMachine) l() bool {
+func (psm *ProtocolStateMachine) l() bool {
 	return psm.logger != nil
 }
 

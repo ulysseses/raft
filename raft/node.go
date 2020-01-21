@@ -11,8 +11,8 @@ import (
 
 // Node is a Raft node that interafts with an Application state machine and network.
 type Node struct {
-	psm *protocolStateMachine
-	tr  *transport
+	psm *ProtocolStateMachine
+	tr  Transport
 
 	_padding0 [64]byte
 	proposeMu sync.Mutex
@@ -25,8 +25,7 @@ type Node struct {
 	stopAppChan    chan struct{}
 	stopAppErrChan chan error
 
-	logger        *zap.Logger
-	sugaredLogger *zap.SugaredLogger
+	logger *zap.Logger
 }
 
 // Propose should be called by the client/application.
@@ -156,7 +155,7 @@ func (n *Node) Start() {
 	n.psm.start()
 	go func() {
 		err := n.runApplication()
-		if err != nil {
+		if err != nil && n.l() {
 			n.logger.Error("runApplication ended with error", zap.Error(err))
 		}
 		n.stopAppErrChan <- err
@@ -169,6 +168,10 @@ func (n *Node) Stop() error {
 	n.tr.stop()
 	n.stopAppChan <- struct{}{}
 	return <-n.stopAppErrChan
+}
+
+func (n *Node) l() bool {
+	return n.logger != nil
 }
 
 // Application applies the committed raft entries. Applications interfacing with
