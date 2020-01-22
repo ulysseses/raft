@@ -9,7 +9,7 @@ import (
 	"github.com/ulysseses/raft/pb"
 )
 
-// Node is a Raft node that interafts with an Application state machine and network.
+// Node is a Raft node that interacts with an Application state machine and network.
 type Node struct {
 	psm             *ProtocolStateMachine
 	tr              Transport
