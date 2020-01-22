@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v1
       - name: Build
         run: |
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -v ./examples/kvstore/server -o ./bin/kvstore-server-${{ matrix.goos }}-${{ matrix.goarch }}
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -v -o ./bin/kvstore-server-${{ matrix.goos }}-${{ matrix.goarch }} ./examples/kvstore/server
       - uses: actions/upload-artifact@master
         with:
           name: binaries
