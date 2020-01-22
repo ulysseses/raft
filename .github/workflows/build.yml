@@ -1,0 +1,25 @@
+name: Build
+on: [push]
+jobs:
+
+  build:
+    name: Build for OS ${{ matrix.goos }} with ARCH ${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [darwin, linux]
+        goarch: [amd64]
+    steps:
+      - name: Set up Go ${{ matrix.go_version }}
+        uses: actions/setup-go@v1
+        with:
+          go-version: 1.x # hopefully chooses the latest stable go version
+        id: go
+      - uses: actions/checkout@v1
+      - name: Build
+        run: |
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -v ./examples/kvstore/server -o ./bin/kvstore-server-${{ matrix.goos }}-${{ matrix.goarch }}
+      - uses: actions/upload-artifact@master
+        with:
+          name: binaries
+          path: ./bin
