@@ -353,6 +353,10 @@ func (psm *ProtocolStateMachine) proposeAsLeader(req proposalRequest) {
 	psm.state.Proposal.Index = entry.Index
 	psm.state.Proposal.Term = entry.Term
 	psm.state.LastIndex, psm.state.LogTerm = psm.log.append(psm.state.LastIndex, entry)
+	// shortcut: 1-node cluster
+	if psm.state.QuorumSize == 1 {
+		psm.endPendingProposal()
+	}
 }
 
 func (psm *ProtocolStateMachine) proposeToLeader(req proposalRequest) {
