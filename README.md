@@ -1,5 +1,5 @@
 # raft
-Repository trying to POC a raft implementation
+Proof of concept implementation of the [Raft](https://raft.github.io) consensus algorithm.
 
 GoDoc: https://godoc.org/github.com/ulysseses/raft
 
@@ -66,3 +66,7 @@ protoc \
   examples/kvstore/kvpb/kv.proto \
   --gogofaster_out=plugins=grpc:examples/kvstore/kvpb
 ```
+
+## License
+
+This project is licensed under the MIT license.
