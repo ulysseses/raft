@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ulysseses/raft/raftpb"
+	"github.com/ulysseses/raft/pb"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 )
@@ -15,10 +15,10 @@ import (
 // Transport sends and receives Raft protocol messages between Raft nodes of the cluster.
 type Transport interface {
 	// recv returns a channel to "read" messages from the network/cluster.
-	recv() <-chan raftpb.Message
+	recv() <-chan pb.Message
 
 	// send returns a channel to "send" messages out to the network/cluster.
-	send() chan<- raftpb.Message
+	send() chan<- pb.Message
 
 	// memberIDs returns a slice of the IDs of all Raft nodes in the cluster.
 	memberIDs() []uint64
@@ -32,14 +32,14 @@ type Transport interface {
 
 // gRPCTransport is resposible for network interaction of the Raft cluster.
 type gRPCTransport struct {
-	raftpb.UnimplementedRaftProtocolServer
+	pb.UnimplementedRaftProtocolServer
 	lis        net.Listener
 	grpcServer *grpc.Server
 	id         uint64
 	peers      map[uint64]*peer
 
-	recvChan chan raftpb.Message
-	sendChan chan raftpb.Message
+	recvChan chan pb.Message
+	sendChan chan pb.Message
 	stopChan chan struct{}
 
 	logger *zap.Logger
@@ -47,12 +47,12 @@ type gRPCTransport struct {
 }
 
 // recv implements Transporter for gRPCTransport
-func (t *gRPCTransport) recv() <-chan raftpb.Message {
+func (t *gRPCTransport) recv() <-chan pb.Message {
 	return t.recvChan
 }
 
 // send implements Transporter for gRPCTransport
-func (t *gRPCTransport) send() chan<- raftpb.Message {
+func (t *gRPCTransport) send() chan<- pb.Message {
 	return t.sendChan
 }
 
@@ -114,9 +114,9 @@ func (t *gRPCTransport) stop() {
 }
 
 // Communicate implements RaftProtocolServer for Transport.
-func (t *gRPCTransport) Communicate(stream raftpb.RaftProtocol_CommunicateServer) error {
+func (t *gRPCTransport) Communicate(stream pb.RaftProtocol_CommunicateServer) error {
 	var (
-		recvChan chan<- raftpb.Message = t.recvChan
+		recvChan chan<- pb.Message = t.recvChan
 		stopChan <-chan struct{}       = t.stopChan
 	)
 	for {
@@ -139,7 +139,7 @@ func (t *gRPCTransport) Communicate(stream raftpb.RaftProtocol_CommunicateServer
 
 func (t *gRPCTransport) sendLoop() {
 	var (
-		msg      raftpb.Message
+		msg      pb.Message
 		stopChan <-chan struct{} = t.stopChan
 	)
 	for {
@@ -173,8 +173,8 @@ func (t *gRPCTransport) l() bool {
 type peer struct {
 	stopChan    chan struct{}
 	stopErrChan chan error
-	sendChan    chan raftpb.Message
-	stream      raftpb.RaftProtocol_CommunicateClient
+	sendChan    chan pb.Message
+	stream      pb.RaftProtocol_CommunicateClient
 	connCloser  func() error
 
 	id   uint64
@@ -191,9 +191,9 @@ type peer struct {
 
 func (p *peer) loop() {
 	var (
-		sendChan <-chan raftpb.Message = p.sendChan
+		sendChan <-chan pb.Message = p.sendChan
 		stopChan <-chan struct{}       = p.stopChan
-		msg      raftpb.Message
+		msg      pb.Message
 	)
 	for {
 		// alive loop
@@ -252,7 +252,7 @@ func (p *peer) connectLoop() {
 			continue
 		}
 		p.connCloser = conn.Close
-		p.stream, err = raftpb.NewRaftProtocolClient(conn).
+		p.stream, err = pb.NewRaftProtocolClient(conn).
 			Communicate(context.Background(), p.callOptions...)
 		if err != nil {
 			if p.debug && p.l() {

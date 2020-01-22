@@ -4,9 +4,9 @@ import (
 	"context"
 	"sync"
 
+	"github.com/ulysseses/raft"
 	"github.com/ulysseses/raft/examples/kvstore/kvpb"
-	"github.com/ulysseses/raft/raft"
-	"github.com/ulysseses/raft/raftpb"
+	"github.com/ulysseses/raft/pb"
 )
 
 // kvStore is a key value store that interfaces with Raft.
@@ -41,7 +41,7 @@ func (kvStore *kvStore) get(ctx context.Context, k string) (v string, ok bool, e
 }
 
 // Apply implements raft.Application for kvStore
-func (kvStore *kvStore) Apply(entries []raftpb.Entry) error {
+func (kvStore *kvStore) Apply(entries []pb.Entry) error {
 	var kv kvpb.KV
 	kvStore.Lock()
 	for _, entry := range entries {

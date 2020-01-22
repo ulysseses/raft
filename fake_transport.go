@@ -3,25 +3,25 @@ package raft
 import (
 	"fmt"
 
-	"github.com/ulysseses/raft/raftpb"
+	"github.com/ulysseses/raft/pb"
 )
 
 // fakeTransport is an in-memory transport consisting of channels.
 // No messages are dropped.
 type fakeTransport struct {
-	recvChan chan raftpb.Message
-	sendChan chan raftpb.Message
+	recvChan chan pb.Message
+	sendChan chan pb.Message
 	id       uint64
 	stopChan chan struct{}
 
-	outboxes map[uint64]chan<- raftpb.Message
+	outboxes map[uint64]chan<- pb.Message
 }
 
-func (t *fakeTransport) recv() <-chan raftpb.Message {
+func (t *fakeTransport) recv() <-chan pb.Message {
 	return t.recvChan
 }
 
-func (t *fakeTransport) send() chan<- raftpb.Message {
+func (t *fakeTransport) send() chan<- pb.Message {
 	return t.sendChan
 }
 
@@ -68,12 +68,12 @@ func newFakeTransports(ids ...uint64) map[uint64]Transport {
 	trs := map[uint64]Transport{}
 	for _, id := range ids {
 		trs[id] = &fakeTransport{
-			recvChan: make(chan raftpb.Message, (len(ids)-1)*2+1),
-			sendChan: make(chan raftpb.Message, (len(ids)-1)*2+1),
+			recvChan: make(chan pb.Message, (len(ids)-1)*2+1),
+			sendChan: make(chan pb.Message, (len(ids)-1)*2+1),
 			id:       id,
 			stopChan: make(chan struct{}),
 
-			outboxes: map[uint64]chan<- raftpb.Message{},
+			outboxes: map[uint64]chan<- pb.Message{},
 		}
 	}
 

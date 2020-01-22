@@ -11,13 +11,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ulysseses/raft/raftpb"
+	"github.com/ulysseses/raft/pb"
 )
 
 type noOpApp struct{}
 
 // Apply implements Application for noOpApp.
-func (app *noOpApp) Apply(entries []raftpb.Entry) error {
+func (app *noOpApp) Apply(entries []pb.Entry) error {
 	return nil
 }
 
@@ -29,11 +29,11 @@ type commitLog struct {
 	node     *Node
 	_padding [64]byte
 	sync.RWMutex
-	log []raftpb.Entry
+	log []pb.Entry
 }
 
 // Apply implements Application for commitLog
-func (cl *commitLog) Apply(entries []raftpb.Entry) error {
+func (cl *commitLog) Apply(entries []pb.Entry) error {
 	cl.Lock()
 	cl.log = append(cl.log, entries...)
 	cl.Unlock()
@@ -62,7 +62,7 @@ func (cl *commitLog) getLatest(ctx context.Context) (int, error) {
 
 func newCommitLog(id uint64) Application {
 	return &commitLog{
-		log: []raftpb.Entry{},
+		log: []pb.Entry{},
 	}
 }
 
@@ -177,7 +177,7 @@ func Benchmark_gRPCTransport_RTT(b *testing.B) {
 	// Benchmark
 	sendC1 := trs[1].send()
 	recvC2 := trs[2].recv()
-	msg := raftpb.Message{From: 1, To: 2}
+	msg := pb.Message{From: 1, To: 2}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		sendC1 <- msg

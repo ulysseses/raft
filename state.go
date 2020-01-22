@@ -143,11 +143,11 @@ type State struct {
 	LogTerm uint64
 
 	// context of a proposal, if any.
-	ProposalContext ProposalContext
+	Proposal Proposal
 
 	// context of a read request originating from this node, if any.
 	// This is used only by ConsistencyStrict.
-	ReadContext ReadContext
+	Read Read
 
 	// lease, if using ConsistencyBoundedStale mode.
 	Lease Lease
@@ -171,12 +171,12 @@ type MemberState struct {
 	// vote was granted to elect us by this peer
 	VoteGranted bool
 
-	// ReadContext of this member. This is only used by ConsistencyStrict.
-	ReadContext ReadContext
+	// Read of this member. This is only used by ConsistencyStrict.
+	Read Read
 }
 
-// ProposalContext is the context associated with a proposal.
-type ProposalContext struct {
+// Proposal is the context associated with a proposal.
+type Proposal struct {
 	TID int64
 
 	// Index is the proposed index.
@@ -184,8 +184,8 @@ type ProposalContext struct {
 	Index, Term uint64
 }
 
-// ReadContext contains all fields relevant to read requests.
-type ReadContext struct {
+// Read contains all fields relevant to read requests.
+type Read struct {
 	// TID is the "transaction ID". It increases monotonically.
 	TID int64
 

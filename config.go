@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ulysseses/raft/raftpb"
+	"github.com/ulysseses/raft/pb"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
@@ -385,6 +385,9 @@ func (c *TransportConfig) Verify() error {
 	if c.ID == 0 {
 		return fmt.Errorf("ID must specified and not zero")
 	}
+	if _, ok := c.Addresses[c.ID]; !ok {
+		return fmt.Errorf("no address found for Raft node ID = %d", c.ID)
+	}
 	if c.MsgBufferSize <= 0 {
 		return fmt.Errorf("MsgBufferSize must be greater than 0")
 	}
@@ -421,7 +424,7 @@ func (c *TransportConfig) Build() (Transport, error) {
 		}
 		peers[id] = &peer{
 			stopChan:       make(chan struct{}),
-			sendChan:       make(chan raftpb.Message, c.MsgBufferSize),
+			sendChan:       make(chan pb.Message, c.MsgBufferSize),
 			stream:         nil, // will be initialized when started
 			id:             id,
 			addr:           addr,
@@ -439,14 +442,14 @@ func (c *TransportConfig) Build() (Transport, error) {
 		id:         c.ID,
 		peers:      peers,
 
-		recvChan: make(chan raftpb.Message),
-		sendChan: make(chan raftpb.Message),
+		recvChan: make(chan pb.Message),
+		sendChan: make(chan pb.Message),
 		stopChan: make(chan struct{}, 2),
 
 		logger: c.Logger,
 		debug:  c.Debug,
 	}
-	raftpb.RegisterRaftProtocolServer(t.grpcServer, &t)
+	pb.RegisterRaftProtocolServer(t.grpcServer, &t)
 	return &t, err
 }
 

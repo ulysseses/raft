@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ulysseses/raft/raft"
+	"github.com/ulysseses/raft"
 	"github.com/valyala/fasthttp"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -20,9 +20,9 @@ var (
 	cpuProfile = ""
 	memProfile = ""
 
-	id             = uint64(1)
-	addresses      = map[uint64]string{1: "tcp://localhost:8081"}
-	consistency    = raft.ConsistencyStrict
+	id             = uint64(0)
+	addresses      = map[uint64]string{}
+	consistency    = raft.ConsistencyLease
 	lease          = 500 * time.Millisecond
 	enableLogging  = false
 	debug          = false

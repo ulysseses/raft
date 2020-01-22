@@ -1,6 +1,8 @@
 # raft
 Repository trying to POC a raft implementation
 
+GoDoc: https://godoc.org/github.com/ulysseses/raft
+
 ## Tooling dependencies
 
 ```bash
@@ -53,10 +55,10 @@ curl -XGET "http://localhost:3003/members"
 ```bash
 # make sure you're in repo base
 protoc \
-  -I raftpb/ \
+  -I pb/ \
   -I $GOPATH/src \
-  raftpb/raft.proto \
-  --gogofaster_out=plugins=grpc:raftpb
+  pb/raft.proto \
+  --gogofaster_out=plugins=grpc:pb
 
 protoc \
   -I examples/kvstore/kvpb/ \

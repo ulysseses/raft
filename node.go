@@ -6,7 +6,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/ulysseses/raft/raftpb"
+	"github.com/ulysseses/raft/pb"
 )
 
 // Node is a Raft node that interafts with an Application state machine and network.
@@ -14,7 +14,7 @@ type Node struct {
 	psm             *ProtocolStateMachine
 	tr              Transport
 	applied         uint64
-	applyFunc       func([]raftpb.Entry) error
+	applyFunc       func([]pb.Entry) error
 	stopAppChan     chan struct{}
 	stopAppErrChan  chan error
 	nowUnixNanoFunc func() int64
@@ -172,5 +172,5 @@ func (n *Node) l() bool {
 // Application applies the committed raft entries. Applications interfacing with
 // the Raft node must implement this interface.
 type Application interface {
-	Apply(entries []raftpb.Entry) error
+	Apply(entries []pb.Entry) error
 }

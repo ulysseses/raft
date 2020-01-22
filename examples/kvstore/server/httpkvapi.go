@@ -99,9 +99,7 @@ func (h *httpKVAPI) handleState(ctx *fasthttp.RequestCtx) {
 		ctx.Write(b)
 	} else {
 		if h.l() {
-			h.logger.Error(
-				"failed to marshal state",
-				zap.Object("state", state), zap.Error(err))
+			h.logger.Error("failed to marshal state", zap.Error(err))
 		}
 		ctx.Error(err.Error(), http.StatusInternalServerError)
 	}

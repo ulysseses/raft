@@ -1,21 +1,21 @@
 package raft
 
 import (
-	"github.com/ulysseses/raft/raftpb"
+	"github.com/ulysseses/raft/pb"
 )
 
 // MsgApp
 func buildApp(
 	term, from, to uint64,
 	index, logTerm, commit uint64,
-	entries []raftpb.Entry,
+	entries []pb.Entry,
 	tid int64,
-) raftpb.Message {
-	return raftpb.Message{
+) pb.Message {
+	return pb.Message{
 		Term:    term,
 		From:    from,
 		To:      to,
-		Type:    raftpb.MsgApp,
+		Type:    pb.MsgApp,
 		Commit:  commit,
 		Entries: entries,
 		Index:   index,
@@ -27,12 +27,12 @@ func buildApp(
 func buildAppStrictRead(
 	term, from, to uint64,
 	commit uint64, tid int64, proxy uint64,
-) raftpb.Message {
-	return raftpb.Message{
+) pb.Message {
+	return pb.Message{
 		Term:   term,
 		From:   from,
 		To:     to,
-		Type:   raftpb.MsgApp,
+		Type:   pb.MsgApp,
 		Commit: commit,
 		Tid:    tid,
 		Proxy:  proxy,
@@ -42,12 +42,12 @@ func buildAppStrictRead(
 type msgApp struct {
 	term, from, to         uint64
 	index, logTerm, commit uint64
-	entries                []raftpb.Entry
+	entries                []pb.Entry
 	tid                    int64
 	proxy                  uint64
 }
 
-func getApp(msg raftpb.Message) msgApp {
+func getApp(msg pb.Message) msgApp {
 	return msgApp{
 		term:    msg.Term,
 		from:    msg.From,
@@ -65,12 +65,12 @@ func getApp(msg raftpb.Message) msgApp {
 func buildAppResp(
 	term, from, to uint64,
 	index uint64, tid int64, success bool,
-) raftpb.Message {
-	return raftpb.Message{
+) pb.Message {
+	return pb.Message{
 		Term:    term,
 		From:    from,
 		To:      to,
-		Type:    raftpb.MsgAppResp,
+		Type:    pb.MsgAppResp,
 		Index:   index,
 		Tid:     tid,
 		Success: success,
@@ -80,12 +80,12 @@ func buildAppResp(
 func buildAppRespStrictRead(
 	term, from, to uint64,
 	tid int64, proxy uint64,
-) raftpb.Message {
-	return raftpb.Message{
+) pb.Message {
+	return pb.Message{
 		Term:  term,
 		From:  from,
 		To:    to,
-		Type:  raftpb.MsgAppResp,
+		Type:  pb.MsgAppResp,
 		Tid:   tid,
 		Proxy: proxy,
 	}
@@ -101,7 +101,7 @@ type msgAppResp struct {
 	success bool
 }
 
-func getAppResp(msg raftpb.Message) msgAppResp {
+func getAppResp(msg pb.Message) msgAppResp {
 	return msgAppResp{
 		term:    msg.Term,
 		from:    msg.From,
@@ -114,12 +114,12 @@ func getAppResp(msg raftpb.Message) msgAppResp {
 }
 
 // MsgRead
-func buildRead(term, from, to uint64, tid int64) raftpb.Message {
-	return raftpb.Message{
+func buildRead(term, from, to uint64, tid int64) pb.Message {
+	return pb.Message{
 		Term: term,
 		From: from,
 		To:   to,
-		Type: raftpb.MsgRead,
+		Type: pb.MsgRead,
 		Tid:  tid,
 	}
 }
@@ -131,7 +131,7 @@ type msgRead struct {
 	tid  int64
 }
 
-func getRead(msg raftpb.Message) msgRead {
+func getRead(msg pb.Message) msgRead {
 	return msgRead{
 		term: msg.Term,
 		from: msg.From,
@@ -141,12 +141,12 @@ func getRead(msg raftpb.Message) msgRead {
 }
 
 // MsgReadResp
-func buildReadResp(term, from, to uint64, tid int64, index uint64) raftpb.Message {
-	return raftpb.Message{
+func buildReadResp(term, from, to uint64, tid int64, index uint64) pb.Message {
+	return pb.Message{
 		Term:  term,
 		From:  from,
 		To:    to,
-		Type:  raftpb.MsgReadResp,
+		Type:  pb.MsgReadResp,
 		Tid:   tid,
 		Index: index,
 	}
@@ -160,7 +160,7 @@ type msgReadResp struct {
 	index uint64
 }
 
-func getReadResp(msg raftpb.Message) msgReadResp {
+func getReadResp(msg pb.Message) msgReadResp {
 	return msgReadResp{
 		term:  msg.Term,
 		from:  msg.From,
@@ -171,14 +171,14 @@ func getReadResp(msg raftpb.Message) msgReadResp {
 }
 
 // MsgProp
-func buildProp(term, from, to uint64, tid int64, data []byte) raftpb.Message {
-	return raftpb.Message{
+func buildProp(term, from, to uint64, tid int64, data []byte) pb.Message {
+	return pb.Message{
 		Term:    term,
 		From:    from,
 		To:      to,
-		Type:    raftpb.MsgProp,
+		Type:    pb.MsgProp,
 		Tid:     tid,
-		Entries: []raftpb.Entry{raftpb.Entry{Data: data}},
+		Entries: []pb.Entry{pb.Entry{Data: data}},
 	}
 }
 
@@ -190,7 +190,7 @@ type msgProp struct {
 	data []byte
 }
 
-func getProp(msg raftpb.Message) msgProp {
+func getProp(msg pb.Message) msgProp {
 	return msgProp{
 		term: msg.Term,
 		from: msg.From,
@@ -201,12 +201,12 @@ func getProp(msg raftpb.Message) msgProp {
 }
 
 // MsgPropResp
-func buildPropResp(term, from, to uint64, tid int64, index, logTerm uint64) raftpb.Message {
-	return raftpb.Message{
+func buildPropResp(term, from, to uint64, tid int64, index, logTerm uint64) pb.Message {
+	return pb.Message{
 		Term:    term,
 		From:    from,
 		To:      to,
-		Type:    raftpb.MsgPropResp,
+		Type:    pb.MsgPropResp,
 		Tid:     tid,
 		Index:   index,
 		LogTerm: logTerm,
@@ -222,7 +222,7 @@ type msgPropResp struct {
 	logTerm uint64
 }
 
-func getPropResp(msg raftpb.Message) msgPropResp {
+func getPropResp(msg pb.Message) msgPropResp {
 	return msgPropResp{
 		term:    msg.Term,
 		from:    msg.From,
@@ -234,12 +234,12 @@ func getPropResp(msg raftpb.Message) msgPropResp {
 }
 
 // MsgVote
-func buildVote(term, from, to uint64, index, logTerm uint64) raftpb.Message {
-	return raftpb.Message{
+func buildVote(term, from, to uint64, index, logTerm uint64) pb.Message {
+	return pb.Message{
 		Term:    term,
 		From:    from,
 		To:      to,
-		Type:    raftpb.MsgVote,
+		Type:    pb.MsgVote,
 		Index:   index,
 		LogTerm: logTerm,
 	}
@@ -253,7 +253,7 @@ type msgVote struct {
 	logTerm uint64
 }
 
-func getVote(msg raftpb.Message) msgVote {
+func getVote(msg pb.Message) msgVote {
 	return msgVote{
 		term:    msg.Term,
 		from:    msg.From,
@@ -264,12 +264,12 @@ func getVote(msg raftpb.Message) msgVote {
 }
 
 // MsgVoteResp
-func buildVoteResp(term, from, to uint64) raftpb.Message {
-	return raftpb.Message{
+func buildVoteResp(term, from, to uint64) pb.Message {
+	return pb.Message{
 		Term: term,
 		From: from,
 		To:   to,
-		Type: raftpb.MsgVoteResp,
+		Type: pb.MsgVoteResp,
 	}
 }
 
@@ -279,7 +279,7 @@ type msgVoteResp struct {
 	to   uint64
 }
 
-func getVoteResp(msg raftpb.Message) msgVoteResp {
+func getVoteResp(msg pb.Message) msgVoteResp {
 	return msgVoteResp{
 		term: msg.Term,
 		from: msg.From,

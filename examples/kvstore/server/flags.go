@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ulysseses/raft/raft"
+	"github.com/ulysseses/raft"
 )
 
 type mapValue struct {
