@@ -384,7 +384,7 @@ func (psm *ProtocolStateMachine) read(req readRequest) {
 	case ConsistencyStrict:
 		psm.readStrict(req)
 	case ConsistencyLease:
-		psm.readBoundedStale(req)
+		psm.readLease(req)
 	default:
 		panic("")
 	}
@@ -412,9 +412,9 @@ func (psm *ProtocolStateMachine) readStrict(req readRequest) {
 	}
 }
 
-func (psm *ProtocolStateMachine) readBoundedStale(req readRequest) {
+func (psm *ProtocolStateMachine) readLease(req readRequest) {
 	resp := readResponse{index: psm.state.Commit}
-	if req.unixNano > psm.state.Lease.Timeout {
+	if psm.state.QuorumSize > 1 && req.unixNano > psm.state.Lease.Timeout {
 		if psm.l() {
 			psm.logger.Info(
 				"lease timed out",

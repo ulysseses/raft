@@ -5,8 +5,10 @@
 // run the Raft cluster as follows:
 //
 //  func main() {
+//    // Start a 1-node cluster.
 //    id := uint64(1)
-//    tr, err := raft.NewTransportConfig(id).Build()
+//    addresses := map[uint64]string{1: "tcp://localhost:8001"}
+//    tr, err := raft.NewTransportConfig(id, addresses).Build()
 //    if err != nil {
 //      log.Fatal(err)
 //    }
