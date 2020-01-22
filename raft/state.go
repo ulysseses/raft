@@ -4,26 +4,31 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-
-	"go.uber.org/zap/zapcore"
 )
 
 // Consistency is the consistency mode that Raft operations should support.
 type Consistency uint8
 
 const (
-	// ConsistencySerializable follows the serializable consistency model.
-	ConsistencySerializable Consistency = iota
-	// ConsistencyLinearizable follows the linearizable consistency model.
-	ConsistencyLinearizable
+	// ConsistencyLease follows the serializable consistency model. If there is a leadership
+	// change, read requests are potentially stale for a maximum of the lease duration amount.
+	ConsistencyLease Consistency = iota
+	// ConsistencyStrict follows the linearizable consistency model. Every read request will
+	// require a quorum's worth of heartbeat acks.
+	ConsistencyStrict
+	// ConsistencyStale follows the serializable consistency model.
+	// Reads can be stale for an arbitrary amount of time. Writes never diverge.
+	ConsistencyStale
 )
 
 func (c Consistency) String() string {
 	switch c {
-	case ConsistencySerializable:
-		return "serializable"
-	case ConsistencyLinearizable:
-		return "linearizable"
+	case ConsistencyLease:
+		return "lease"
+	case ConsistencyStrict:
+		return "strict"
+	case ConsistencyStale:
+		return "stale"
 	default:
 		panic("")
 	}
@@ -41,10 +46,12 @@ func (c *Consistency) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	switch strings.ToLower(j) {
-	case "serializable":
-		*c = ConsistencySerializable
-	case "linearizable":
-		*c = ConsistencyLinearizable
+	case "lease":
+		*c = ConsistencyLease
+	case "strict":
+		*c = ConsistencyStrict
+	case "stale":
+		*c = ConsistencyStale
 	default:
 		return fmt.Errorf("unrecognized consistency: %s", j)
 	}
@@ -135,29 +142,15 @@ type State struct {
 	// largest term of this node's log
 	LogTerm uint64
 
-	// context of a read request originating from this node, if any.
-	ReadContext ReadContext
-
 	// context of a proposal, if any.
 	ProposalContext ProposalContext
-}
 
-// MarshalLogObject implements zap.Marshaler for State.
-func (s State) MarshalLogObject(enc zapcore.ObjectEncoder) error {
-	enc.AddUint64("id", s.ID)
-	enc.AddString("consistency", s.Consistency.String())
-	enc.AddInt("quorumSize", s.QuorumSize)
-	enc.AddInt("clusterSize", s.ClusterSize)
-	enc.AddString("role", s.Role.String())
-	enc.AddUint64("term", s.Term)
-	enc.AddUint64("leader", s.Leader)
-	enc.AddUint64("commit", s.Commit)
-	enc.AddUint64("votedFor", s.VotedFor)
-	enc.AddUint64("lastIndex", s.LastIndex)
-	enc.AddUint64("logTerm", s.LogTerm)
-	enc.AddObject("readContext", s.ReadContext)
-	enc.AddObject("proposalContext", s.ProposalContext)
-	return nil
+	// context of a read request originating from this node, if any.
+	// This is used only by ConsistencyStrict.
+	ReadContext ReadContext
+
+	// lease, if using ConsistencyBoundedStale mode.
+	Lease Lease
 }
 
 // MemberState contains all info about a member node from the perspective of
@@ -178,19 +171,17 @@ type MemberState struct {
 	// vote was granted to elect us by this peer
 	VoteGranted bool
 
-	// ReadContext of this member.
+	// ReadContext of this member. This is only used by ConsistencyStrict.
 	ReadContext ReadContext
 }
 
-// MarshalLogObject implements zap.Marshaler for MemberState.
-func (m MemberState) MarshalLogObject(enc zapcore.ObjectEncoder) error {
-	enc.AddUint64("id", m.ID)
-	enc.AddUint64("match", m.Match)
-	enc.AddUint64("next", m.Next)
-	enc.AddBool("ack", m.Ack)
-	enc.AddBool("voteGranted", m.VoteGranted)
-	enc.AddObject("readContext", m.ReadContext)
-	return nil
+// ProposalContext is the context associated with a proposal.
+type ProposalContext struct {
+	TID int64
+
+	// Index is the proposed index.
+	// Term is the proposed term.
+	Index, Term uint64
 }
 
 // ReadContext contains all fields relevant to read requests.
@@ -205,27 +196,18 @@ type ReadContext struct {
 	Acks int
 }
 
-// MarshalLogObject implements zap.Marshaler for ReadContext.
-func (rc ReadContext) MarshalLogObject(enc zapcore.ObjectEncoder) error {
-	enc.AddInt64("tid", rc.TID)
-	enc.AddUint64("index", rc.Index)
-	enc.AddInt("acks", rc.Acks)
-	return nil
-}
+// Lease contains fields related to lease for read requests. This is used only by leaders in
+// ConsistencyBoundedStale mode.
+type Lease struct {
+	// Timeout is the point in time that a lease should timeout.
+	Timeout int64
 
-// ProposalContext is the context associated with a proposal.
-type ProposalContext struct {
-	TID int64
+	// Start marks the beginning of the attempt to extend the lease, i.e. sending out new heartbeats
+	Start int64
 
-	// Index is the proposed index.
-	// Term is the proposed term.
-	Index, Term uint64
-}
+	// If a majority of heartbeats were acked, the Timeout should be extended to Start + Extension
+	Extension int64
 
-// MarshalLogObject implements zap.Marshaler for ProposalContext.
-func (pc ProposalContext) MarshalLogObject(enc zapcore.ObjectEncoder) error {
-	enc.AddInt64("tid", pc.TID)
-	enc.AddUint64("index", pc.Index)
-	enc.AddUint64("term", pc.Term)
-	return nil
+	// Acks is the number of acks for the specified Start.
+	Acks int
 }

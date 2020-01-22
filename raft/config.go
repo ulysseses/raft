@@ -32,6 +32,9 @@ type ProtocolConfig struct {
 	// Consistency is the consistency level to use for the Raft cluster.
 	Consistency Consistency
 
+	// Lease is the duration of the read request lease. This is used only if ConsistencyLease.
+	Lease time.Duration
+
 	// HeartbeatTicker is the ticker to use for signaling when to send out heartbeats. If nil,
 	// a default one based on TickPeriod and HeartbeatTicks is created and used.
 	// ElectionTicker is the ticker to use for signaling when to timeout an election. If nil,
@@ -49,6 +52,9 @@ type ProtocolConfig struct {
 func (c *ProtocolConfig) Verify() error {
 	if c.ID == 0 {
 		return fmt.Errorf("ID must specified and not zero")
+	}
+	if c.Consistency == ConsistencyLease && c.Lease <= 0 {
+		return fmt.Errorf("Lease must be greater than 0 if ConsistencyLease")
 	}
 	if c.TickPeriod <= 0 {
 		return fmt.Errorf("TickPeriod must be greater than 0")
@@ -124,11 +130,13 @@ func (c *ProtocolConfig) Build(tr Transport) (*ProtocolStateMachine, error) {
 			Consistency: c.Consistency,
 			QuorumSize:  clusterSize/2 + 1,
 			ClusterSize: clusterSize,
+			Lease:       Lease{Extension: c.Lease.Nanoseconds()},
 		},
 		members: members,
 
 		log:                    newLog(),
 		quorumMatchIndexBuffer: make([]uint64, clusterSize),
+		nowUnixNanoFunc:        func() int64 { return time.Now().UnixNano() },
 		stopChan:               make(chan struct{}, 1),
 
 		logger: c.Logger,
@@ -168,7 +176,10 @@ var protocolConfigTemplate = ProtocolConfig{
 	MinElectionTicks: 10,
 	MaxElectionTicks: 20,
 
-	Consistency: ConsistencySerializable,
+	Consistency: ConsistencyLease,
+
+	// 5 heartbeat ticks. If you're feeling risky, set this to 1 election timeout.
+	Lease: 500 * time.Millisecond,
 }
 
 // ProtocolConfigOption provides options to configure ProtocolConfig further.
@@ -270,6 +281,20 @@ func (w *withConsistency) Transform(c *ProtocolConfig) {
 // WithConsistency sets the consistency mode.
 func WithConsistency(consistency Consistency) ProtocolConfigOption {
 	return &withConsistency{consistency: consistency}
+}
+
+/******** WithLease **********************************************************/
+type withLease struct {
+	lease time.Duration
+}
+
+func (w *withLease) Transform(c *ProtocolConfig) {
+	c.Lease = w.lease
+}
+
+// WithLease sets the lease duration. This should be used if using ConsistencyLease.
+func WithLease(lease time.Duration) ProtocolConfigOption {
+	return &withLease{lease: lease}
 }
 
 /******** AddProtocolLogger **************************************************/
@@ -625,12 +650,13 @@ func (c *NodeConfig) Build(
 	}
 
 	n := Node{
-		psm:            psm,
-		tr:             tr,
-		stopAppChan:    make(chan struct{}),
-		stopAppErrChan: make(chan error),
-		applyFunc:      a.Apply,
-		logger:         c.Logger,
+		psm:             psm,
+		tr:              tr,
+		stopAppChan:     make(chan struct{}),
+		stopAppErrChan:  make(chan error),
+		applyFunc:       a.Apply,
+		nowUnixNanoFunc: func() int64 { return time.Now().UnixNano() },
+		logger:          c.Logger,
 	}
 
 	return &n, nil

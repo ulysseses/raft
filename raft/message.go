@@ -10,7 +10,6 @@ func buildApp(
 	index, logTerm, commit uint64,
 	entries []raftpb.Entry,
 	tid int64,
-	proxy uint64,
 ) raftpb.Message {
 	return raftpb.Message{
 		Term:    term,
@@ -22,7 +21,21 @@ func buildApp(
 		Index:   index,
 		LogTerm: logTerm,
 		Tid:     tid,
-		Proxy:   proxy,
+	}
+}
+
+func buildAppStrictRead(
+	term, from, to uint64,
+	commit uint64, tid int64, proxy uint64,
+) raftpb.Message {
+	return raftpb.Message{
+		Term:   term,
+		From:   from,
+		To:     to,
+		Type:   raftpb.MsgApp,
+		Commit: commit,
+		Tid:    tid,
+		Proxy:  proxy,
 	}
 }
 
@@ -51,10 +64,7 @@ func getApp(msg raftpb.Message) msgApp {
 // MsgAppResp
 func buildAppResp(
 	term, from, to uint64,
-	index uint64,
-	tid int64,
-	proxy uint64,
-	success bool,
+	index uint64, tid int64, success bool,
 ) raftpb.Message {
 	return raftpb.Message{
 		Term:    term,
@@ -63,8 +73,21 @@ func buildAppResp(
 		Type:    raftpb.MsgAppResp,
 		Index:   index,
 		Tid:     tid,
-		Proxy:   proxy,
 		Success: success,
+	}
+}
+
+func buildAppRespStrictRead(
+	term, from, to uint64,
+	tid int64, proxy uint64,
+) raftpb.Message {
+	return raftpb.Message{
+		Term:  term,
+		From:  from,
+		To:    to,
+		Type:  raftpb.MsgAppResp,
+		Tid:   tid,
+		Proxy: proxy,
 	}
 }
 

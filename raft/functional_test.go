@@ -42,7 +42,8 @@ func (cl *commitLog) Apply(entries []raftpb.Entry) error {
 
 func (cl *commitLog) append(ctx context.Context, x int) error {
 	s := strconv.Itoa(x)
-	return cl.node.Propose(ctx, []byte(s))
+	_, _, err := cl.node.Propose(ctx, []byte(s))
+	return err
 }
 
 func (cl *commitLog) getLatest(ctx context.Context) (int, error) {
@@ -184,13 +185,13 @@ func Benchmark_gRPCTransport_RTT(b *testing.B) {
 	}
 }
 
-func Test_3Node_Linearizable_RoundRobin(t *testing.T) {
+func Test_3Node_ConsistencyStrict_RoundRobin(t *testing.T) {
 	// Spin 3 nodes
 	nodes, apps := spinUpNodes(
 		t,
 		[]uint64{1, 2, 3},
 		[]ProtocolConfigOption{
-			WithConsistency(ConsistencyLinearizable),
+			WithConsistency(ConsistencyStrict),
 			// AddProtocolLogger(),
 		},
 		[]NodeConfigOption{
@@ -205,6 +206,37 @@ func Test_3Node_Linearizable_RoundRobin(t *testing.T) {
 		cl.node = nodes[id]
 	}
 
+	testRoundRobin(t, 5, 10*time.Second, apps)
+}
+
+func Test_3Node_ConsistencyLease_RoundRobin(t *testing.T) {
+	// Spin 3 nodes
+	nodes, apps := spinUpNodes(
+		t,
+		[]uint64{1, 2, 3},
+		[]ProtocolConfigOption{
+			WithConsistency(ConsistencyLease),
+			WithLease(500 * time.Millisecond),
+			// AddProtocolLogger(),
+		},
+		[]NodeConfigOption{
+			// AddNodeLogger(),
+		},
+		newCommitLog)
+	defer stopAllNodes(t, nodes)
+
+	// connect the commitLog to its corresponding node
+	for id := range apps {
+		cl := apps[id].(*commitLog)
+		cl.node = nodes[id]
+	}
+
+	testRoundRobin(t, 10, 10*time.Second, apps)
+}
+
+// TODO(ulysseses): test durability and consistency when under network or node failure
+
+func testRoundRobin(t *testing.T, rounds int, timeout time.Duration, apps map[uint64]Application) {
 	errChan := make(chan error)
 	stopChan := make(chan struct{})
 	for id, app := range apps {
@@ -239,23 +271,24 @@ func Test_3Node_Linearizable_RoundRobin(t *testing.T) {
 
 	// Choose in round-robin which Raft node to write monotonically increasing number
 	go func() {
-		id := uint64(1)
-		i := 1
-		for i <= 5 {
-			cl := apps[id].(*commitLog)
+		ids := []uint64{}
+		for id := range apps {
+			ids = append(ids, id)
+		}
+		i := 0
+		j := 1
+		for j <= rounds {
+			cl := apps[ids[i]].(*commitLog)
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			if err := cl.append(ctx, i); err != nil {
-				t.Logf("app %d errored on i = %d: %v", id, i, err)
+			if err := cl.append(ctx, j); err != nil {
+				t.Logf("app %d errored on j = %d: %v", ids[i], j, err)
 			} else {
-				i++
+				j++
 			}
 			cancel()
-			id++
-			if id == 4 {
-				id = 1
-			}
+			i = (i + 1) % len(ids)
 		}
-		for range []uint64{1, 2, 3} {
+		for range apps {
 			stopChan <- struct{}{}
 		}
 	}()
@@ -265,9 +298,7 @@ func Test_3Node_Linearizable_RoundRobin(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out after 10 seconds")
+	case <-time.After(timeout):
+		t.Fatalf("timed out after %v", timeout)
 	}
 }
-
-// TODO(ulysseses): test durability and consistency when under network or node failure

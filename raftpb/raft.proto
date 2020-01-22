@@ -28,15 +28,19 @@ enum MessageType {
   // * index:    previous entry index
   // * logTerm:  previous entry term
   // * commit:   leader's commit
-  // * tid:      read request context, otherwise 0 if none
+  // * tid:      read request context if ConsistencyStrict,
+  //             lease start if ConsistencyLease,
+  //             otherwise 0
   // * proxy:    read request context, otherwise 0 if none
   // * entries:  entries to append, ignored if there is read request context
   MsgApp      = 1;
 
   // MsgAppResp Fields
   // * index:    index of the largest match index,
-  // * tid:      read request context, otherwise 0 if none
-  // * proxy:    read request context, otherwise 0 if none
+  // * tid:      read request context if ConsistencyStrict,
+  //             lease start if ConsistencyLease,
+  //             otherwise 0
+  // * proxy:    read request context if ConsistencyStrict, otherwise 0
   // * success:  whether or not the append request was successful
   MsgAppResp  = 2;
 

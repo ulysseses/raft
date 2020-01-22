@@ -39,26 +39,19 @@ type consistencyValue struct {
 }
 
 func (v *consistencyValue) String() string {
-	switch *v.c {
-	case raft.ConsistencySerializable:
-		return "serializable"
-	case raft.ConsistencyLinearizable:
-		return "linearizable"
-	default:
-		panic("")
-	}
+	return v.c.String()
 }
 
 func (v *consistencyValue) Set(arg string) error {
-	switch arg {
-	case "serializable":
-		*v.c = raft.ConsistencySerializable
-	case "linearizable":
-		*v.c = raft.ConsistencyLinearizable
+	switch strings.ToLower(arg) {
+	case "lease":
+		*v.c = raft.ConsistencyLease
+	case "strict":
+		*v.c = raft.ConsistencyStrict
+	case "stale":
+		*v.c = raft.ConsistencyStale
 	default:
-		return fmt.Errorf(
-			"unknown consistency %s; acceptable values: serializable or linearizable",
-			arg)
+		return fmt.Errorf("unknown consistency %s", arg)
 	}
 	return nil
 }

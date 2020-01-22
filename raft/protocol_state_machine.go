@@ -47,6 +47,7 @@ type ProtocolStateMachine struct {
 
 	log                    *raftLog
 	quorumMatchIndexBuffer []uint64
+	nowUnixNanoFunc        func() int64
 	stopChan               chan struct{}
 
 	logger *zap.Logger
@@ -60,7 +61,7 @@ func (psm *ProtocolStateMachine) run() {
 		case <-psm.stopChan:
 			return
 		case <-psm.heartbeatC: // heartbeatC is null when not leader
-			psm.heartbeatWithEntries()
+			psm.heartbeat()
 		case <-electionTickerC:
 			if psm.state.Role == RoleLeader {
 				// Step down to follower role if could not establish quorum
@@ -71,8 +72,8 @@ func (psm *ProtocolStateMachine) run() {
 					psm.becomeFollower()
 				}
 				// Reset acks
-				for _, p := range psm.members {
-					p.Ack = false
+				for _, m := range psm.members {
+					m.Ack = false
 				}
 			} else {
 				psm.becomeCandidate()
@@ -97,12 +98,12 @@ func (psm *ProtocolStateMachine) run() {
 
 func (psm *ProtocolStateMachine) hasQuorumAcks() bool {
 	acks := 0
-	for _, p := range psm.members {
-		if p.ID == psm.state.ID {
+	for _, m := range psm.members {
+		if m.ID == psm.state.ID {
 			acks++
 			continue
 		}
-		if p.Ack {
+		if m.Ack {
 			acks++
 		}
 	}
@@ -167,7 +168,7 @@ func (psm *ProtocolStateMachine) processApp(msg msgApp) {
 		psm.becomeFollower()
 	}
 
-	if msg.tid == 0 {
+	if msg.proxy == 0 {
 		// append request from leader
 		var largestMatchIndex uint64 = 0
 		success := msg.term >= psm.state.Term &&
@@ -187,16 +188,12 @@ func (psm *ProtocolStateMachine) processApp(msg msgApp) {
 		}
 		psm.sendChan <- buildAppResp(
 			psm.state.Term, psm.state.ID, msg.from,
-			largestMatchIndex,
-			0, 0,
-			success)
+			largestMatchIndex, msg.tid, success)
 	} else {
 		// heartbeat (containing read request) from leader
-		psm.sendChan <- buildAppResp(
+		psm.sendChan <- buildAppRespStrictRead(
 			psm.state.Term, psm.state.ID, msg.from,
-			0,
-			msg.tid, msg.proxy,
-			false)
+			msg.tid, msg.proxy)
 	}
 }
 
@@ -205,31 +202,40 @@ func (psm *ProtocolStateMachine) processAppResp(msg msgAppResp) {
 		return
 	}
 
-	p := psm.members[msg.from]
-	p.Ack = true
+	m := psm.members[msg.from]
+	m.Ack = true
 
-	if msg.tid == 0 {
+	if msg.proxy == 0 {
 		// append response to leader
 		// Update match/next index
 		if msg.success {
-			if msg.index > p.Match {
-				p.Match = msg.index
+			if msg.index > m.Match {
+				m.Match = msg.index
 			}
-			p.Next = p.Match + 1
+			m.Next = m.Match + 1
 		} else {
-			if p.Next > p.Match {
-				p.Next--
+			if m.Next > m.Match {
+				m.Next--
 				if psm.l() {
 					psm.logger.Info(
 						"decreased next",
-						zap.Uint64("follower", p.ID), zap.Uint64("newNext", p.Next))
+						zap.Uint64("follower", m.ID), zap.Uint64("newNext", m.Next))
 				}
 			}
 		}
 
+		// update commit if necessary
 		quorumMatchIndex := psm.quorumMatchIndex()
 		if psm.log.entry(quorumMatchIndex).Term == psm.state.Term && quorumMatchIndex > psm.state.Commit {
 			psm.updateCommit(quorumMatchIndex)
+		}
+
+		// see if we can extend lease
+		if psm.state.Consistency == ConsistencyLease && psm.state.Lease.Start == msg.tid {
+			psm.state.Lease.Acks++
+			if psm.state.Lease.Acks == psm.state.QuorumSize-1 {
+				psm.state.Lease.Timeout = psm.state.Lease.Start + psm.state.Lease.Extension
+			}
 		}
 	} else {
 		// read response to leader
@@ -240,7 +246,7 @@ func (psm *ProtocolStateMachine) processAppResp(msg msgAppResp) {
 			readContext = &(psm.members[msg.proxy].ReadContext)
 		}
 		readContext.Acks++
-		if readContext.Acks >= psm.state.QuorumSize {
+		if readContext.Acks == psm.state.QuorumSize-1 {
 			if msg.proxy == psm.state.ID {
 				// respond to own (leader's) original read request
 				psm.endPendingRead(msg.tid)
@@ -254,23 +260,15 @@ func (psm *ProtocolStateMachine) processAppResp(msg msgAppResp) {
 			}
 		}
 	}
-
-	canAckProp := psm.state.ProposalContext.TID == msg.tid &&
-		psm.state.ProposalContext.Index <= psm.state.Commit &&
-		psm.state.ProposalContext.Term <= psm.state.Term
-	if canAckProp {
-		psm.endPendingProposal()
-	}
 }
 
 func (psm *ProtocolStateMachine) processRead(msg msgRead) {
 	if psm.state.Role == RoleLeader {
-		proxyPeer := psm.members[msg.from]
-		proxyPeer.ReadContext.TID = msg.tid
-		proxyPeer.ReadContext.Acks = 1
-		proxyPeer.ReadContext.Index = psm.state.Commit
-
-		psm.heartbeatWithContext(msg.tid, msg.from)
+		proxyMember := psm.members[msg.from]
+		proxyMember.ReadContext.TID = msg.tid
+		proxyMember.ReadContext.Acks = 1
+		proxyMember.ReadContext.Index = psm.state.Commit
+		psm.heartbeatStrictRead(msg.tid, msg.from)
 	}
 }
 
@@ -327,8 +325,8 @@ func (psm *ProtocolStateMachine) processVoteResp(msg msgVoteResp) {
 	}
 	psm.members[msg.from].VoteGranted = true
 	voteCount := 0
-	for _, p := range psm.members {
-		if psm.state.ID == p.ID || p.VoteGranted {
+	for _, m := range psm.members {
+		if psm.state.ID == m.ID || m.VoteGranted {
 			voteCount++
 		}
 	}
@@ -339,34 +337,60 @@ func (psm *ProtocolStateMachine) processVoteResp(msg msgVoteResp) {
 
 func (psm *ProtocolStateMachine) propose(req proposalRequest) {
 	if psm.state.Role == RoleLeader {
-		entry := raftpb.Entry{
-			Index: psm.state.LastIndex + 1,
-			Term:  psm.state.Term,
-			Data:  req.data,
-		}
-		psm.state.ProposalContext.TID++
-		psm.state.ProposalContext.Index = entry.Index
-		psm.state.ProposalContext.Term = entry.Term
-		psm.state.LastIndex, psm.state.LogTerm = psm.log.append(psm.state.LastIndex, entry)
+		psm.proposeAsLeader(req)
 	} else {
-		if psm.state.Leader == 0 {
-			psm.state.ProposalContext.Index = 0
-			psm.state.ProposalContext.Term = 0
-			if psm.l() {
-				psm.logger.Info("no leader")
-			}
-			return
-		}
-		psm.state.ProposalContext.TID++
-		psm.state.ProposalContext.Index = 0
-		psm.state.ProposalContext.Term = 0
-		psm.sendChan <- buildProp(
-			psm.state.Term, psm.state.ID, psm.state.Leader,
-			psm.state.ProposalContext.TID, req.data)
+		psm.proposeToLeader(req)
 	}
 }
 
+func (psm *ProtocolStateMachine) proposeAsLeader(req proposalRequest) {
+	entry := raftpb.Entry{
+		Index: psm.state.LastIndex + 1,
+		Term:  psm.state.Term,
+		Data:  req.data,
+	}
+	psm.state.ProposalContext.TID++
+	psm.state.ProposalContext.Index = entry.Index
+	psm.state.ProposalContext.Term = entry.Term
+	psm.state.LastIndex, psm.state.LogTerm = psm.log.append(psm.state.LastIndex, entry)
+}
+
+func (psm *ProtocolStateMachine) proposeToLeader(req proposalRequest) {
+	if psm.state.Leader == 0 {
+		psm.state.ProposalContext.Index = 0
+		psm.state.ProposalContext.Term = 0
+		if psm.l() {
+			psm.logger.Info("no leader")
+		}
+		return
+	}
+	psm.state.ProposalContext.TID++
+	psm.state.ProposalContext.Index = 0
+	psm.state.ProposalContext.Term = 0
+	psm.sendChan <- buildProp(
+		psm.state.Term, psm.state.ID, psm.state.Leader,
+		psm.state.ProposalContext.TID, req.data)
+}
+
+// read is used only in ConsistencyStrict and ConsistencyBoundedStale modes.
 func (psm *ProtocolStateMachine) read(req readRequest) {
+	switch psm.state.Consistency {
+	case ConsistencyStale:
+		// note: read shouldn't even be called
+		select {
+		case psm.readRespChan <- readResponse{index: psm.state.Commit}:
+		default:
+		}
+	case ConsistencyStrict:
+		psm.readStrict(req)
+	case ConsistencyLease:
+		psm.readBoundedStale(req)
+	default:
+		panic("")
+	}
+}
+
+func (psm *ProtocolStateMachine) readStrict(req readRequest) {
 	psm.state.ReadContext.TID++
 
 	if psm.state.Role == RoleLeader {
@@ -376,7 +400,7 @@ func (psm *ProtocolStateMachine) read(req readRequest) {
 			return
 		}
 		// ping everyone
-		psm.heartbeatWithContext(psm.state.ReadContext.TID, psm.state.ID)
+		psm.heartbeatStrictRead(psm.state.ReadContext.TID, psm.state.ID)
 	} else {
 		// send read request to leader
 		if psm.state.Leader == 0 {
@@ -388,6 +412,23 @@ func (psm *ProtocolStateMachine) read(req readRequest) {
 	}
 }
 
+func (psm *ProtocolStateMachine) readBoundedStale(req readRequest) {
+	resp := readResponse{index: psm.state.Commit}
+	if req.unixNano > psm.state.Lease.Timeout {
+		if psm.l() {
+			psm.logger.Info(
+				"lease timed out",
+				zap.Int64("readRequestTime", req.unixNano),
+				zap.Int64("leaseTimeout", psm.state.Lease.Timeout))
+		}
+		resp.err = fmt.Errorf("lease timed out")
+	}
+	select {
+	case psm.readRespChan <- resp:
+	default:
+	}
+}
+
 func (psm *ProtocolStateMachine) becomeFollower() {
 	if psm.l() {
 		psm.logger.Info("becoming follower", zap.Uint64("term", psm.state.Term))
@@ -396,8 +437,8 @@ func (psm *ProtocolStateMachine) becomeFollower() {
 	psm.electionTicker.Reset()
 	psm.state.Role = RoleFollower
 	psm.state.VotedFor = 0
-	for _, p := range psm.members {
-		p.VoteGranted = false
+	for _, m := range psm.members {
+		m.VoteGranted = false
 	}
 }
 
@@ -413,13 +454,13 @@ func (psm *ProtocolStateMachine) becomeCandidate() {
 
 	// Send vote requests to other peers
 	lastEntry := psm.log.entry(psm.state.LastIndex)
-	for _, p := range psm.members {
-		if psm.state.ID == p.ID {
-			p.VoteGranted = true
+	for _, m := range psm.members {
+		if psm.state.ID == m.ID {
+			m.VoteGranted = true
 			continue
 		}
-		p.VoteGranted = false
-		psm.sendChan <- buildVote(psm.state.Term, psm.state.ID, p.ID, lastEntry.Index, lastEntry.Term)
+		m.VoteGranted = false
+		psm.sendChan <- buildVote(psm.state.Term, psm.state.ID, m.ID, lastEntry.Index, lastEntry.Term)
 	}
 
 	// shortcut: 1-node cluster
@@ -438,10 +479,10 @@ func (psm *ProtocolStateMachine) becomeLeader() {
 	psm.state.Role = RoleLeader
 	psm.state.Leader = psm.state.ID
 	psm.state.VotedFor = 0
-	for _, p := range psm.members {
-		p.VoteGranted = false
-		p.Next = psm.state.LastIndex + 1
-		p.Ack = false
+	for _, m := range psm.members {
+		m.VoteGranted = false
+		m.Next = psm.state.LastIndex + 1
+		m.Ack = false
 	}
 
 	// Try to commit an (empty) entry from the newly elected term
@@ -449,41 +490,44 @@ func (psm *ProtocolStateMachine) becomeLeader() {
 		Index: psm.state.LastIndex + 1,
 		Term:  psm.state.Term,
 	})
-	psm.heartbeatWithEntries()
+	psm.heartbeat()
 	psm.heartbeatTicker.Reset()
 	psm.heartbeatC = psm.heartbeatTicker.C()
 }
 
-func (psm *ProtocolStateMachine) heartbeatWithEntries() {
-	for _, p := range psm.members {
-		if psm.state.ID == p.ID {
+func (psm *ProtocolStateMachine) heartbeat() {
+	if psm.state.Consistency == ConsistencyLease {
+		psm.state.Lease.Start = psm.nowUnixNanoFunc()
+		psm.state.Lease.Acks = 0
+	}
+
+	for _, m := range psm.members {
+		if psm.state.ID == m.ID {
 			continue
 		}
 		entries := []raftpb.Entry{}
-		if p.Next <= psm.state.LastIndex {
+		if m.Next <= psm.state.LastIndex {
 			psm.log.RLock()
-			entries = append(entries, psm.log.entries(p.Next, psm.state.LastIndex)...)
+			entries = append(entries, psm.log.entries(m.Next, psm.state.LastIndex)...)
 			psm.log.RUnlock()
 		}
-		prevEntry := psm.log.entry(p.Next - 1)
+		prevEntry := psm.log.entry(m.Next - 1)
 		psm.sendChan <- buildApp(
-			psm.state.Term, psm.state.ID, p.ID,
+			psm.state.Term, psm.state.ID, m.ID,
 			prevEntry.Index, prevEntry.Term, psm.state.Commit,
 			entries,
-			0, 0)
+			psm.state.Lease.Start)
 	}
 }
 
-func (psm *ProtocolStateMachine) heartbeatWithContext(unixNano int64, proxy uint64) {
-	for _, p := range psm.members {
-		if psm.state.ID == p.ID {
+func (psm *ProtocolStateMachine) heartbeatStrictRead(unixNano int64, proxy uint64) {
+	for _, m := range psm.members {
+		if psm.state.ID == m.ID {
 			continue
 		}
-		psm.sendChan <- buildApp(
-			psm.state.Term, psm.state.ID, p.ID,
-			0, 0, psm.state.Commit,
-			[]raftpb.Entry{},
-			unixNano, proxy)
+		psm.sendChan <- buildAppStrictRead(
+			psm.state.Term, psm.state.ID, m.ID,
+			psm.state.Commit, unixNano, proxy)
 	}
 }
 
@@ -491,11 +535,11 @@ func (psm *ProtocolStateMachine) heartbeatWithContext(unixNano int64, proxy uint
 func (psm *ProtocolStateMachine) quorumMatchIndex() uint64 {
 	matches := psm.quorumMatchIndexBuffer
 	i := 0
-	for _, p := range psm.members {
-		if psm.state.ID == p.ID {
+	for _, m := range psm.members {
+		if psm.state.ID == m.ID {
 			matches[i] = psm.state.LastIndex
 		}
-		matches[i] = p.Match
+		matches[i] = m.Match
 		i++
 	}
 	sort.Slice(matches, func(i, j int) bool {
@@ -553,7 +597,10 @@ func (psm *ProtocolStateMachine) updateCommit(newCommit uint64) {
 	}
 	psm.state.Commit = newCommit
 	psm.commitChan <- newCommit
-	if psm.state.ProposalContext.Index <= psm.state.Commit {
+
+	canAckProp := psm.state.ProposalContext.Index <= psm.state.Commit &&
+		psm.state.ProposalContext.Term <= psm.state.LogTerm
+	if canAckProp {
 		psm.endPendingProposal()
 	}
 }
@@ -603,9 +650,12 @@ type proposalRequest struct {
 type proposalResponse struct {
 	index, term uint64
 }
-type readRequest struct{}
+type readRequest struct {
+	unixNano int64 // used only by ConsistencyLease
+}
 type readResponse struct {
 	index uint64
+	err   error
 }
 type membersRequest struct{}
 type stateReq struct{}

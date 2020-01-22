@@ -24,7 +24,8 @@ func (kvStore *kvStore) set(ctx context.Context, k, v string) error {
 	if err != nil {
 		return err
 	}
-	return kvStore.node.Propose(ctx, data)
+	_, _, err = kvStore.node.Propose(ctx, data)
+	return err
 }
 
 // get gets the value associated to a key.
