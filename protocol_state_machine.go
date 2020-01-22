@@ -376,7 +376,7 @@ func (psm *ProtocolStateMachine) proposeToLeader(req proposalRequest) {
 		psm.state.Proposal.TID, req.data)
 }
 
-// read is used only in ConsistencyStrict and ConsistencyBoundedStale modes.
+// read is used only in ConsistencyStrict and ConsistencyLease modes.
 func (psm *ProtocolStateMachine) read(req readRequest) {
 	switch psm.state.Consistency {
 	case ConsistencyStale:

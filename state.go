@@ -149,7 +149,7 @@ type State struct {
 	// This is used only by ConsistencyStrict.
 	Read Read
 
-	// lease, if using ConsistencyBoundedStale mode.
+	// lease, if using ConsistencyLease mode.
 	Lease Lease
 }
 
@@ -197,7 +197,7 @@ type Read struct {
 }
 
 // Lease contains fields related to lease for read requests. This is used only by leaders in
-// ConsistencyBoundedStale mode.
+// ConsistencyLease mode.
 type Lease struct {
 	// Timeout is the point in time that a lease should timeout.
 	Timeout int64
