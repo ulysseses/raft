@@ -148,7 +148,7 @@ func (c *ProtocolConfig) Build(tr Transport) (*ProtocolStateMachine, error) {
 
 // NewProtocolConfig builds a ProtocolConfig for a Raft node.
 func NewProtocolConfig(id uint64, opts ...ProtocolConfigOption) *ProtocolConfig {
-	c := protocolConfigTemplate
+	c := ProtocolConfigTemplate
 	c.ID = id
 
 	var aOpt *addProtocolLogger
@@ -166,7 +166,9 @@ func NewProtocolConfig(id uint64, opts ...ProtocolConfigOption) *ProtocolConfig 
 	return &c
 }
 
-var protocolConfigTemplate = ProtocolConfig{
+// ProtocolConfigTemplate is a partially filled ProtocolConfig that contains default values.
+// Do not use ProtocolConfigTemplate directly; use NewProtocolConfig() instead.
+var ProtocolConfigTemplate = ProtocolConfig{
 	TickPeriod: 100 * time.Millisecond,
 
 	// A sensible heartbeat frequency is once per 100ms.
@@ -459,7 +461,7 @@ func NewTransportConfig(
 	addresses map[uint64]string,
 	opts ...TransportConfigOption,
 ) *TransportConfig {
-	c := transportConfigTemplate
+	c := TransportConfigTemplate
 	c.ID = id
 	c.Addresses = addresses
 
@@ -485,8 +487,9 @@ func NewTransportConfig(
 	return &c
 }
 
-// transportConfigTemplate is the default partially filled TransportConfig.
-var transportConfigTemplate = TransportConfig{
+// TransportConfigTemplate is a partially filled TransportConfig that contains default values.
+// Do not use TransportConfigTemplate directly; use NewTransportConfig() instead.
+var TransportConfigTemplate = TransportConfig{
 	// 30 message buffer per peer client
 	MsgBufferSize: 30,
 
