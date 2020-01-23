@@ -126,10 +126,10 @@ func (n *Node) read(ctx context.Context, unixNano int64) (uint64, error) {
 func (n *Node) applyTo(ctx context.Context, index uint64) error {
 	n.psm.log.Lock()
 	err := n.applyFunc(n.psm.log.entries(n.applied+1, index))
-	n.psm.log.Unlock()
 	if err == nil {
 		n.applied = index
 	}
+	n.psm.log.Unlock()
 	return err
 }
 
