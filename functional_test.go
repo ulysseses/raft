@@ -211,7 +211,7 @@ func Test_3Node_ConsistencyStrict_RoundRobin(t *testing.T) {
 	// wait for leader election
 	time.Sleep(3 * time.Second)
 
-	testLinearizableRoundRobin(t, apps, 2, time.Second, 10*time.Second)
+	testLinearizableRoundRobin(t, apps, 2, time.Second, 30*time.Second)
 }
 
 func Test_3Node_ConsistencyLease_RoundRobin(t *testing.T) {
