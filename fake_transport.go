@@ -17,14 +17,17 @@ type fakeTransport struct {
 	outboxes map[uint64]chan<- pb.Message
 }
 
+// recv implements Transport for fakeTransport
 func (t *fakeTransport) recv() <-chan pb.Message {
 	return t.recvChan
 }
 
+// send implements Transport for fakeTransport
 func (t *fakeTransport) send() chan<- pb.Message {
 	return t.sendChan
 }
 
+// memberIDs implements Transport for fakeTransport
 func (t *fakeTransport) memberIDs() []uint64 {
 	mIDs := []uint64{t.id}
 	for pID := range t.outboxes {
@@ -33,6 +36,7 @@ func (t *fakeTransport) memberIDs() []uint64 {
 	return mIDs
 }
 
+// start implements Transport for fakeTransport
 func (t *fakeTransport) start() {
 	go func() {
 		for {
@@ -54,6 +58,7 @@ func (t *fakeTransport) start() {
 	}()
 }
 
+// stop implements Transport for fakeTransport
 func (t *fakeTransport) stop() {
 	t.stopChan <- struct{}{}
 }
@@ -68,8 +73,8 @@ func newFakeTransports(ids ...uint64) map[uint64]Transport {
 	trs := map[uint64]Transport{}
 	for _, id := range ids {
 		trs[id] = &fakeTransport{
-			recvChan: make(chan pb.Message, (len(ids)-1)*2+1),
-			sendChan: make(chan pb.Message, (len(ids)-1)*2+1),
+			recvChan: make(chan pb.Message, (len(ids)-1)*30+1),
+			sendChan: make(chan pb.Message, (len(ids)-1)*30+1),
 			id:       id,
 			stopChan: make(chan struct{}),
 

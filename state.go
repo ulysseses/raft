@@ -182,6 +182,8 @@ type Proposal struct {
 	// Index is the proposed index.
 	// Term is the proposed term.
 	Index, Term uint64
+
+	pending bool
 }
 
 // Read contains all fields relevant to read requests.

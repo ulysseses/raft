@@ -3,7 +3,10 @@ package raft_test
 import (
 	"context"
 	"fmt"
+	"io/ioutil"
 	"log"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -23,21 +26,26 @@ type register struct {
 func (r *register) Apply(entries []pb.Entry) error {
 	r.Lock()
 	defer r.Unlock()
-	x, err := strconv.Atoi(string(entries[len(entries)-1].Data))
-	if err != nil {
-		return err
+	for _, entry := range entries {
+		if len(entry.Data) == 0 {
+			continue
+		}
+		x, err := strconv.Atoi(string(entry.Data))
+		if err != nil {
+			return err
+		}
+		r.x = x
 	}
-	r.x = x
 	return nil
 }
 
-func (r *register) append(ctx context.Context, x int) error {
+func (r *register) set(ctx context.Context, x int) error {
 	s := strconv.Itoa(x)
 	_, _, err := r.node.Propose(ctx, []byte(s))
 	return err
 }
 
-func (r *register) getLatest(ctx context.Context) (int, error) {
+func (r *register) get(ctx context.Context) (int, error) {
 	if err := r.node.Read(ctx); err != nil {
 		return 0, err
 	}
@@ -47,42 +55,47 @@ func (r *register) getLatest(ctx context.Context) (int, error) {
 }
 
 func ExampleApplication_register() {
+	tmpDir, err := ioutil.TempDir("", "")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+	id := uint64(1)
 	addresses := map[uint64]string{
-		1: "tcp://localhost:8001",
-		2: "tcp://localhost:8002",
-		3: "tcp://localhost:8003",
-	}
-	registers := map[uint64]*register{}
-
-	// Start up the Raft cluster.
-	for id := range addresses {
-		r := &register{}
-		registers[id] = r
-
-		tr, err := raft.NewTransportConfig(id, addresses).Build()
-		if err != nil {
-			log.Fatal(err)
-		}
-		psm, err := raft.NewProtocolConfig(id).Build(tr)
-		if err != nil {
-			log.Fatal(err)
-		}
-		node, err := raft.NewNodeConfig(id).Build(psm, tr, r)
-		if err != nil {
-			log.Fatal(err)
-		}
-		node.Start()
-		defer node.Stop()
-		r.node = node
+		1: fmt.Sprintf("unix://%s", filepath.Join(tmpDir, "ExampleApplication_register.sock")),
 	}
 
-	// wait a bit for there to be a leader
-	time.Sleep(3 * time.Second)
+	// Start up the Raft node.
+	r := &register{}
+	tr, err := raft.NewTransportConfig(id, addresses).Build()
+	if err != nil {
+		log.Fatal(err)
+	}
+	psm, err := raft.NewProtocolConfig(id).Build(tr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	node, err := raft.NewNodeConfig(id).Build(psm, tr, r)
+	if err != nil {
+		log.Fatal(err)
+	}
+	r.node = node
+	node.Start()
+	defer node.Stop()
+
+	// Wait for leader election
+	time.Sleep(2 * time.Second)
 
 	// Commit an entry via the register IDed 1
-	_ = registers[1].append(context.Background(), 42)
+	if err := r.set(context.Background(), 42); err != nil {
+		log.Fatalf("set failed: %v", err)
+	}
 
 	// Get that committed entry via register IDed 2
-	fmt.Println(registers[2].getLatest(context.Background()))
-	// Output: 42
+	if x, err := r.get(context.Background()); err == nil {
+		fmt.Println(x)
+		// Output: 42
+	} else {
+		log.Fatalf("get failed: %v", err)
+	}
 }

@@ -49,8 +49,8 @@ enum MessageType {
   MsgRead     = 3;
   
   // MsgReadResp Fields
-  // * tid:   read request context
-  // * index: read index
+  // * tid:     read request context
+  // * index:   read index
   MsgReadResp = 4;
 
   // MsgProp Fields

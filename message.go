@@ -24,7 +24,7 @@ func buildApp(
 	}
 }
 
-func buildAppStrictRead(
+func buildAppRead(
 	term, from, to uint64,
 	commit uint64, tid int64, proxy uint64,
 ) pb.Message {

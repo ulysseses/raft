@@ -25,45 +25,43 @@ func newNoOpApp(id uint64) Application {
 	return &noOpApp{}
 }
 
-type commitLog struct {
-	node     *Node
-	_padding [64]byte
+// register is a single-valued store
+type register struct {
 	sync.RWMutex
-	log []pb.Entry
+	node *Node
+	x    int
 }
 
-// Apply implements Application for commitLog
-func (cl *commitLog) Apply(entries []pb.Entry) error {
-	cl.Lock()
-	cl.log = append(cl.log, entries...)
-	cl.Unlock()
+// Apply implements Application for register
+func (r *register) Apply(entries []pb.Entry) error {
+	r.Lock()
+	defer r.Unlock()
+	for _, entry := range entries {
+		if len(entry.Data) == 0 {
+			continue
+		}
+		x, err := strconv.Atoi(string(entry.Data))
+		if err != nil {
+			return err
+		}
+		r.x = x
+	}
 	return nil
 }
 
-func (cl *commitLog) append(ctx context.Context, x int) error {
+func (r *register) set(ctx context.Context, x int) error {
 	s := strconv.Itoa(x)
-	_, _, err := cl.node.Propose(ctx, []byte(s))
+	_, _, err := r.node.Propose(ctx, []byte(s))
 	return err
 }
 
-func (cl *commitLog) getLatest(ctx context.Context) (int, error) {
-	if err := cl.node.Read(ctx); err != nil {
+func (r *register) get(ctx context.Context) (int, error) {
+	if err := r.node.Read(ctx); err != nil {
 		return 0, err
 	}
-	cl.RLock()
-	if len(cl.log) == 0 {
-		cl.RUnlock()
-		return 0, nil
-	}
-	latestEntry := cl.log[len(cl.log)-1]
-	cl.RUnlock()
-	return strconv.Atoi(string(latestEntry.Data))
-}
-
-func newCommitLog(id uint64) Application {
-	return &commitLog{
-		log: []pb.Entry{},
-	}
+	r.RLock()
+	defer r.RUnlock()
+	return r.x, nil
 }
 
 func createUnixSockets(
@@ -86,6 +84,10 @@ func createUnixSockets(
 	return
 }
 
+// Due to there being 3 Raft nodes in a single Go process,
+// there is a lot of inter-goroutine traffic (e.g. between transports, nodes, PSMs, apps, etc.).
+// The raft package isn't designed to be performant for this 3-node cluster in-process
+// test environment. As such, please give generous timeout values to prevent test flakiness.
 func spinUpNodes(
 	t *testing.T,
 	ids []uint64,
@@ -192,21 +194,24 @@ func Test_3Node_ConsistencyStrict_RoundRobin(t *testing.T) {
 		[]uint64{1, 2, 3},
 		[]ProtocolConfigOption{
 			WithConsistency(ConsistencyStrict),
-			// AddProtocolLogger(),
+			AddProtocolLogger(),
 		},
 		[]NodeConfigOption{
-			// AddNodeLogger(),
+			AddNodeLogger(),
 		},
-		newCommitLog)
+		func(uint64) Application { return &register{} })
 	defer stopAllNodes(t, nodes)
 
 	// connect the commitLog to its corresponding node
 	for id := range apps {
-		cl := apps[id].(*commitLog)
-		cl.node = nodes[id]
+		r := apps[id].(*register)
+		r.node = nodes[id]
 	}
 
-	testRoundRobin(t, 5, 10*time.Second, apps)
+	// wait for leader election
+	time.Sleep(3 * time.Second)
+
+	testLinearizableRoundRobin(t, apps, 2, time.Second, 10*time.Second)
 }
 
 func Test_3Node_ConsistencyLease_RoundRobin(t *testing.T) {
@@ -217,88 +222,93 @@ func Test_3Node_ConsistencyLease_RoundRobin(t *testing.T) {
 		[]ProtocolConfigOption{
 			WithConsistency(ConsistencyLease),
 			WithLease(500 * time.Millisecond),
-			// AddProtocolLogger(),
+			AddProtocolLogger(),
 		},
 		[]NodeConfigOption{
-			// AddNodeLogger(),
+			AddNodeLogger(),
 		},
-		newCommitLog)
+		func(id uint64) Application { return &register{} })
 	defer stopAllNodes(t, nodes)
 
-	// connect the commitLog to its corresponding node
+	// connect the register to its corresponding node
 	for id := range apps {
-		cl := apps[id].(*commitLog)
+		cl := apps[id].(*register)
 		cl.node = nodes[id]
 	}
 
-	testRoundRobin(t, 10, 10*time.Second, apps)
+	// wait for leader election
+	time.Sleep(3 * time.Second)
+
+	testLinearizableRoundRobin(t, apps, 3, time.Second, 30*time.Second)
 }
 
-// TODO(ulysseses): test durability and consistency when under network or node failure
-
-func testRoundRobin(t *testing.T, rounds int, timeout time.Duration, apps map[uint64]Application) {
-	errChan := make(chan error)
-	stopChan := make(chan struct{})
-	for id, app := range apps {
-		cl := app.(*commitLog)
-		go func(id uint64, cl *commitLog) {
-			x := 0
-			for {
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-				y, err := cl.getLatest(ctx)
-				cancel()
-				if err == nil {
-					if y < x {
-						errChan <- fmt.Errorf("app %d read %d after reading %d", id, y, x)
-						return
-					}
-					t.Logf("app %d: x = %d, y = %d", id, x, y)
-					x = y
-				} else {
-					t.Logf("app %d errored: %v", id, err)
-				}
-
-				select {
-				case <-stopChan:
-					errChan <- nil
-					return
-				case <-time.After(time.Second):
-					// rate limit
-				}
-			}
-		}(id, cl)
-	}
-
-	// Choose in round-robin which Raft node to write monotonically increasing number
+// Due to there being multiple (e.g. n=3) Raft nodes in a single Go process,
+// there is a lot of inter-goroutine traffic (e.g. between transports, nodes, PSMs, apps, etc.).
+// The raft package isn't designed to be performant for this 3-node cluster in-process
+// test environment. As such, please give generous timeout values to prevent test flakiness.
+func testLinearizableRoundRobin(
+	t *testing.T,
+	registers map[uint64]Application,
+	rounds int,
+	reqTimeout time.Duration,
+	testTimeout time.Duration,
+) {
+	errC := make(chan error)
 	go func() {
 		ids := []uint64{}
-		for id := range apps {
+		for id := range registers {
 			ids = append(ids, id)
 		}
-		i := 0
-		j := 1
-		for j <= rounds {
-			cl := apps[ids[i]].(*commitLog)
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			if err := cl.append(ctx, j); err != nil {
-				t.Logf("app %d errored on j = %d: %v", ids[i], j, err)
-			} else {
-				j++
+		writerInd := 0
+		readerInd := 1
+		for round := 1; round <= rounds; round++ {
+			writer := registers[ids[writerInd]].(*register)
+			reader := registers[ids[readerInd]].(*register)
+			writerInd = (writerInd + 1) % len(ids)
+			readerInd = (readerInd + 1) % len(ids)
+
+			// write with writer
+			writeAttempt := 1
+			for {
+				ctx, cancel := context.WithTimeout(context.Background(), reqTimeout)
+				err := writer.set(ctx, round)
+				cancel()
+				if err != nil {
+					t.Logf("failed attempt #%d of writing value %d", writeAttempt, round)
+					writeAttempt++
+					continue
+				}
+				break
 			}
-			cancel()
-			i = (i + 1) % len(ids)
+			// then read with reader
+			readAttempt := 1
+			for {
+				ctx, cancel := context.WithTimeout(context.Background(), reqTimeout)
+				got, err := reader.get(ctx)
+				cancel()
+				if err != nil {
+					t.Logf("failed attempt #%d of reading value %d", readAttempt, round)
+					readAttempt++
+					continue
+				}
+				if got != round {
+					errC <- fmt.Errorf("read %d, but expected %d: %v", got, round, err)
+					return
+				}
+				break
+			}
 		}
-		for range apps {
-			stopChan <- struct{}{}
-		}
+		errC <- nil
 	}()
 
 	select {
-	case err := <-errChan:
+	case err := <-errC:
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(timeout):
-		t.Fatalf("timed out after %v", timeout)
+	case <-time.After(testTimeout):
+		t.Fatalf("test timed out after %v", testTimeout)
 	}
 }
+
+// TODO(ulysseses): test durability and consistency when under network or node failure

@@ -45,6 +45,9 @@ func (kvStore *kvStore) Apply(entries []pb.Entry) error {
 	var kv kvpb.KV
 	kvStore.Lock()
 	for _, entry := range entries {
+		if len(entry.Data) == 0 {
+			continue
+		}
 		if err := kv.Unmarshal(entry.Data); err != nil {
 			kvStore.Unlock()
 			return err

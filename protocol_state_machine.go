@@ -233,7 +233,7 @@ func (psm *ProtocolStateMachine) processAppResp(msg msgAppResp) {
 		// see if we can extend lease
 		if psm.state.Consistency == ConsistencyLease && psm.state.Lease.Start == msg.tid {
 			psm.state.Lease.Acks++
-			if psm.state.Lease.Acks == psm.state.QuorumSize-1 {
+			if psm.state.Lease.Acks+1 == psm.state.QuorumSize {
 				psm.state.Lease.Timeout = psm.state.Lease.Start + psm.state.Lease.Extension
 			}
 		}
@@ -246,7 +246,7 @@ func (psm *ProtocolStateMachine) processAppResp(msg msgAppResp) {
 			r = &(psm.members[msg.proxy].Read)
 		}
 		r.Acks++
-		if r.Acks == psm.state.QuorumSize-1 {
+		if r.Acks == psm.state.QuorumSize {
 			if msg.proxy == psm.state.ID {
 				// respond to own (leader's) original read request
 				psm.endPendingRead(msg.tid)
@@ -264,15 +264,27 @@ func (psm *ProtocolStateMachine) processAppResp(msg msgAppResp) {
 
 func (psm *ProtocolStateMachine) processRead(msg msgRead) {
 	if psm.state.Role == RoleLeader {
-		proxyMember := psm.members[msg.from]
-		proxyMember.Read.TID = msg.tid
-		proxyMember.Read.Acks = 1
-		proxyMember.Read.Index = psm.state.Commit
-		psm.heartbeatStrictRead(msg.tid, msg.from)
+		switch psm.state.Consistency {
+		case ConsistencyStrict:
+			proxyMember := psm.members[msg.from]
+			proxyMember.Read.TID = msg.tid
+			proxyMember.Read.Acks = 1
+			proxyMember.Read.Index = psm.state.Commit
+			psm.heartbeatRead(msg.tid, msg.from)
+		case ConsistencyLease:
+			if msg.tid <= psm.state.Lease.Timeout {
+				psm.sendChan <- buildReadResp(
+					psm.state.Term, psm.state.ID, msg.from,
+					msg.tid, psm.state.Commit)
+			}
+		default:
+			panic("")
+		}
 	}
 }
 
 func (psm *ProtocolStateMachine) processReadResp(msg msgReadResp) {
+	psm.state.Read.Index = msg.index
 	psm.endPendingRead(msg.tid)
 }
 
@@ -296,9 +308,10 @@ func (psm *ProtocolStateMachine) processProp(msg msgProp) {
 }
 
 func (psm *ProtocolStateMachine) processPropResp(msg msgPropResp) {
-	// check if the proposal response is the one we're looking for (equal unixNano)
+	// check if the proposal response is the one we're looking for
 	if msg.tid == psm.state.Proposal.TID {
 		psm.state.Proposal.Index = msg.index
+		psm.state.Proposal.Term = msg.term
 	}
 }
 
@@ -336,6 +349,9 @@ func (psm *ProtocolStateMachine) processVoteResp(msg msgVoteResp) {
 }
 
 func (psm *ProtocolStateMachine) propose(req proposalRequest) {
+	if psm.debug && psm.l() {
+		psm.logger.Debug("proposing")
+	}
 	if psm.state.Role == RoleLeader {
 		psm.proposeAsLeader(req)
 	} else {
@@ -352,84 +368,91 @@ func (psm *ProtocolStateMachine) proposeAsLeader(req proposalRequest) {
 	psm.state.Proposal.TID++
 	psm.state.Proposal.Index = entry.Index
 	psm.state.Proposal.Term = entry.Term
+	psm.state.Proposal.pending = true
 	psm.state.LastIndex, psm.state.LogTerm = psm.log.append(psm.state.LastIndex, entry)
 	// shortcut: 1-node cluster
 	if psm.state.QuorumSize == 1 {
-		psm.endPendingProposal()
+		psm.updateCommit(psm.state.LastIndex)
 	}
 }
 
 func (psm *ProtocolStateMachine) proposeToLeader(req proposalRequest) {
 	if psm.state.Leader == 0 {
-		psm.state.Proposal.Index = 0
-		psm.state.Proposal.Term = 0
 		if psm.l() {
 			psm.logger.Info("no leader")
 		}
+		psm.state.Proposal.pending = false
 		return
 	}
 	psm.state.Proposal.TID++
-	psm.state.Proposal.Index = 0
-	psm.state.Proposal.Term = 0
+	psm.state.Proposal.pending = true
 	psm.sendChan <- buildProp(
 		psm.state.Term, psm.state.ID, psm.state.Leader,
 		psm.state.Proposal.TID, req.data)
 }
 
-// read is used only in ConsistencyStrict and ConsistencyLease modes.
+// read is intended for ConsistencyStrict and ConsistencyLease modes.
 func (psm *ProtocolStateMachine) read(req readRequest) {
-	switch psm.state.Consistency {
-	case ConsistencyStale:
-		// note: read shouldn't even be called
-		select {
-		case psm.readRespChan <- readResponse{index: psm.state.Commit}:
-		default:
-		}
-	case ConsistencyStrict:
-		psm.readStrict(req)
-	case ConsistencyLease:
-		psm.readLease(req)
-	default:
-		panic("")
+	if psm.debug && psm.l() {
+		psm.logger.Debug("incoming read request")
 	}
-}
+	// shortcut: ConsistencyStale
+	if psm.state.Consistency == ConsistencyStale {
+		// note: read shouldn't even be called in the first place
+		psm.endPendingRead(psm.state.Read.TID)
+		return
+	}
 
-func (psm *ProtocolStateMachine) readStrict(req readRequest) {
-	psm.state.Read.TID++
+	// read request must go through leader
+	if psm.state.Leader == 0 {
+		if psm.l() {
+			psm.logger.Info("read to no leader")
+		}
+		return
+	}
 
 	if psm.state.Role == RoleLeader {
-		// shortcut: 1-node cluster
-		if psm.state.QuorumSize == 1 {
-			psm.endPendingRead(psm.state.Read.TID)
-			return
+		// service read directly
+		switch psm.state.Consistency {
+		case ConsistencyStrict:
+			// ping everyone
+			psm.state.Read.TID++
+			psm.state.Read.Acks = 1
+			psm.state.Read.Index = psm.state.Commit
+			// shortcut: 1-node cluster
+			if psm.state.QuorumSize == 1 {
+				psm.endPendingRead(psm.state.Read.TID)
+				return
+			}
+			psm.heartbeatRead(psm.state.Read.TID, psm.state.ID)
+		case ConsistencyLease:
+			// shortcut: 1-node cluster
+			if psm.state.QuorumSize == 1 {
+				psm.state.Read.Index = psm.state.Commit
+				psm.endPendingRead(psm.state.Read.TID)
+				return
+			}
+			// service the read if within lease timeout
+			if req.unixNano <= psm.state.Lease.Timeout {
+				psm.state.Read.TID = req.unixNano
+				psm.endPendingRead(psm.state.Read.TID)
+			}
+		default:
+			panic("")
 		}
-		// ping everyone
-		psm.heartbeatStrictRead(psm.state.Read.TID, psm.state.ID)
 	} else {
 		// send read request to leader
-		if psm.state.Leader == 0 {
-			return
+		switch psm.state.Consistency {
+		case ConsistencyStrict:
+			psm.state.Read.TID++
+		case ConsistencyLease:
+			psm.state.Read.TID = req.unixNano
+		default:
+			panic("")
 		}
 		psm.sendChan <- buildRead(
 			psm.state.Term, psm.state.ID, psm.state.Leader,
 			psm.state.Read.TID)
-	}
-}
-
-func (psm *ProtocolStateMachine) readLease(req readRequest) {
-	resp := readResponse{index: psm.state.Commit}
-	if psm.state.QuorumSize > 1 && req.unixNano > psm.state.Lease.Timeout {
-		if psm.l() {
-			psm.logger.Info(
-				"lease timed out",
-				zap.Int64("readRequestTime", req.unixNano),
-				zap.Int64("leaseTimeout", psm.state.Lease.Timeout))
-		}
-		resp.err = fmt.Errorf("lease timed out")
-	}
-	select {
-	case psm.readRespChan <- resp:
-	default:
 	}
 }
 
@@ -494,6 +517,10 @@ func (psm *ProtocolStateMachine) becomeLeader() {
 		Index: psm.state.LastIndex + 1,
 		Term:  psm.state.Term,
 	})
+	// shortcut: 1-node cluster
+	if psm.state.QuorumSize == 1 {
+		psm.updateCommit(psm.state.LastIndex)
+	}
 	psm.heartbeat()
 	psm.heartbeatTicker.Reset()
 	psm.heartbeatC = psm.heartbeatTicker.C()
@@ -524,14 +551,14 @@ func (psm *ProtocolStateMachine) heartbeat() {
 	}
 }
 
-func (psm *ProtocolStateMachine) heartbeatStrictRead(unixNano int64, proxy uint64) {
+func (psm *ProtocolStateMachine) heartbeatRead(tid int64, proxy uint64) {
 	for _, m := range psm.members {
 		if psm.state.ID == m.ID {
 			continue
 		}
-		psm.sendChan <- buildAppStrictRead(
+		psm.sendChan <- buildAppRead(
 			psm.state.Term, psm.state.ID, m.ID,
-			psm.state.Commit, unixNano, proxy)
+			psm.state.Commit, tid, proxy)
 	}
 }
 
@@ -563,10 +590,14 @@ func (psm *ProtocolStateMachine) endPendingProposal() {
 	select {
 	case psm.propRespChan <- resp:
 	default:
+		if psm.l() {
+			psm.logger.Info(
+				"proposal acknowledged, but no app was listening",
+				zap.Int64("currentTID", psm.state.Proposal.TID))
+		}
 	}
 	// zero out pending proposal
-	psm.state.Proposal.Index = 0
-	psm.state.Proposal.Term = 0
+	psm.state.Proposal.pending = false
 }
 
 // ack (nil error) or cancel (non-nil error) any pending read requests
@@ -586,6 +617,9 @@ func (psm *ProtocolStateMachine) endPendingRead(tid int64) {
 	select {
 	case psm.readRespChan <- resp:
 	default:
+		if psm.l() {
+			psm.logger.Info("read acknowledged, but no app was listening")
+		}
 	}
 	// zero out pending read
 	psm.state.Read.Acks = 0
@@ -602,7 +636,8 @@ func (psm *ProtocolStateMachine) updateCommit(newCommit uint64) {
 	psm.state.Commit = newCommit
 	psm.commitChan <- newCommit
 
-	canAckProp := psm.state.Proposal.Index <= psm.state.Commit &&
+	canAckProp := psm.state.Proposal.pending &&
+		psm.state.Proposal.Index <= psm.state.Commit &&
 		psm.state.Proposal.Term <= psm.state.LogTerm
 	if canAckProp {
 		psm.endPendingProposal()

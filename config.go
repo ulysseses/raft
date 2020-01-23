@@ -444,7 +444,7 @@ func (c *TransportConfig) Build() (Transport, error) {
 		id:         c.ID,
 		peers:      peers,
 
-		recvChan: make(chan pb.Message),
+		recvChan: make(chan pb.Message, (len(c.Addresses)-1)*c.MsgBufferSize+1),
 		sendChan: make(chan pb.Message),
 		stopChan: make(chan struct{}, 2),
 
