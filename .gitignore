@@ -1,5 +1,4 @@
 .vscode
-server
 experimental/*
 *.prof
 .DS_Store
