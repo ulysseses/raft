@@ -8,14 +8,14 @@ jobs:
       matrix:
         go_version: [1.13]
         os: [ubuntu-latest, macOS-latest]
-      steps:
-        - name: Set up Go ${{ matrix.go_version }}
-          uses: actions/setup-go@v1
-          with:
-            go-version: ${{ matrix.go_version }}
-          id: go
-        - name: Check out code into the Go module directory
-          uses: actions/checkout@v1
-        - name: Test
-          run: |
-            go test -timeout=240s -race -v .
+    steps:
+    - name: Set up Go ${{ matrix.go_version }}
+      uses: actions/setup-go@v1
+      with:
+        go-version: ${{ matrix.go_version }}
+      id: go
+    - name: Check out code into the Go module directory
+      uses: actions/checkout@v1
+    - name: Test
+      run: |
+        go test -timeout=5m -race -v .
