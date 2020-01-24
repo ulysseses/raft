@@ -95,6 +95,11 @@ func spinUpNodes(
 	nOpts []NodeConfigOption,
 	newApp func(uint64) Application,
 ) (map[uint64]*Node, map[uint64]Application) {
+	if !*testDisableLoggingFlag {
+		pOpts = append(pOpts, AddProtocolLogger())
+		nOpts = append(nOpts, AddNodeLogger())
+	}
+
 	nodes := map[uint64]*Node{}
 	apps := map[uint64]Application{}
 	trs := newFakeTransports(ids...)
@@ -193,13 +198,8 @@ func Test_3Node_ConsistencyStrict_RoundRobin(t *testing.T) {
 	nodes, apps := spinUpNodes(
 		t,
 		[]uint64{1, 2, 3},
-		[]ProtocolConfigOption{
-			WithConsistency(ConsistencyStrict),
-			AddProtocolLogger(),
-		},
-		[]NodeConfigOption{
-			AddNodeLogger(),
-		},
+		[]ProtocolConfigOption{WithConsistency(ConsistencyStrict)},
+		nil,
 		func(uint64) Application { return &register{} })
 	defer stopAllNodes(t, nodes)
 
@@ -220,14 +220,8 @@ func Test_3Node_ConsistencyLease_RoundRobin(t *testing.T) {
 	nodes, apps := spinUpNodes(
 		t,
 		[]uint64{1, 2, 3},
-		[]ProtocolConfigOption{
-			WithConsistency(ConsistencyLease),
-			WithLease(500 * time.Millisecond),
-			AddProtocolLogger(),
-		},
-		[]NodeConfigOption{
-			AddNodeLogger(),
-		},
+		nil,
+		nil,
 		func(id uint64) Application { return &register{} })
 	defer stopAllNodes(t, nodes)
 
@@ -243,19 +237,35 @@ func Test_3Node_ConsistencyLease_RoundRobin(t *testing.T) {
 	testRoundRobin(t, apps, 3, false, time.Second, 30*time.Second)
 }
 
+func Benchmark_3Node_ConsistencyStrict_RoundRobin(b *testing.B) {
+	// Spin 3 nodes
+	nodes, apps := spinUpNodes(
+		b,
+		[]uint64{1, 2, 3},
+		[]ProtocolConfigOption{WithConsistency(ConsistencyStrict)},
+		nil,
+		func(id uint64) Application { return &register{} })
+	defer stopAllNodes(b, nodes)
+
+	// connect the register to its corresponding node
+	for id := range apps {
+		cl := apps[id].(*register)
+		cl.node = nodes[id]
+	}
+
+	// wait for leader election
+	time.Sleep(3 * time.Second)
+
+	testRoundRobin(b, apps, b.N, false, time.Second, 60*time.Second)
+}
+
 func Benchmark_3Node_ConsistencyLease_RoundRobin(b *testing.B) {
 	// Spin 3 nodes
 	nodes, apps := spinUpNodes(
 		b,
 		[]uint64{1, 2, 3},
-		[]ProtocolConfigOption{
-			WithConsistency(ConsistencyLease),
-			WithLease(500 * time.Millisecond),
-			AddProtocolLogger(),
-		},
-		[]NodeConfigOption{
-			AddNodeLogger(),
-		},
+		nil,
+		nil,
 		func(id uint64) Application { return &register{} })
 	defer stopAllNodes(b, nodes)
 
@@ -276,14 +286,8 @@ func Benchmark_1Node_ConsistencyLease_RoundRobin(b *testing.B) {
 	nodes, apps := spinUpNodes(
 		b,
 		[]uint64{1},
-		[]ProtocolConfigOption{
-			WithConsistency(ConsistencyLease),
-			WithLease(500 * time.Millisecond),
-			AddProtocolLogger(),
-		},
-		[]NodeConfigOption{
-			AddNodeLogger(),
-		},
+		nil,
+		nil,
 		func(id uint64) Application { return &register{} })
 	defer stopAllNodes(b, nodes)
 
@@ -353,13 +357,18 @@ func testRoundRobin(
 					readAttempt++
 					continue
 				}
-				if linearizable && got != round {
-					errC <- fmt.Errorf("read %d, but expected %d: %v", got, round, err)
-					return
+				if got != round {
+					err = fmt.Errorf("read %d, but expected %d", got, round)
+					if linearizable {
+						errC <- err
+						return
+					}
+					tb.Log(err)
 				}
 				break
 			}
 		}
+
 		if b, ok := tb.(*testing.B); ok {
 			b.StopTimer()
 		}

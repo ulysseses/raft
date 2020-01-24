@@ -24,6 +24,17 @@ github.com/gogo/protobuf/install-protobuf.sh  # it you don't already have protoc
 
 ## Example KV Store
 
+### Run a pre-configured 3-node cluster
+
+```bash
+cd examples/kvstore/server
+source ./utils.sh
+start3cluster
+# eventually call stop3cluster
+```
+
+### Or run the cluster yourself manually
+
 ```bash
 cd examples/kvstore/server
 go build
@@ -47,6 +58,8 @@ go build
   -addresses "1,tcp://localhost:8081|2,tcp://localhost:8082|3,tcp://localhost:8083"
 ```
 
+### Interact with the cluster!
+
 You can perform set & get operations against `/store`, e.g.
 
 ```bash
@@ -60,6 +73,8 @@ You can also check out the current Raft node state as well as its point of views
 curl -XGET "http://localhost:3003/state"
 curl -XGET "http://localhost:3003/members"
 ```
+
+Finally, there's always the trusty `/debug/pprof/` endpoint.
 
 ## Building Protobuf files
 
@@ -76,6 +91,39 @@ protoc \
   -I $GOPATH/src \
   examples/kvstore/kvpb/kv.proto \
   --gogofaster_out=plugins=grpc:examples/kvstore/kvpb
+```
+
+## Testing and Benchmarking
+
+```bash
+$ go test -v -timeout=5m -race .
+=== RUN   Test_3Node_StartAndStop
+--- PASS: Test_3Node_StartAndStop (2.50s)
+=== RUN   Test_3Node_ConsistencyStrict_RoundRobin
+--- PASS: Test_3Node_ConsistencyStrict_RoundRobin (3.90s)
+=== RUN   Test_3Node_ConsistencyLease_RoundRobin
+--- PASS: Test_3Node_ConsistencyLease_RoundRobin (4.00s)
+=== RUN   Test_heartbeatTicker
+--- PASS: Test_heartbeatTicker (0.01s)
+=== RUN   Test_electionTicker
+--- PASS: Test_electionTicker (0.02s)
+=== RUN   ExampleApplication_register
+--- PASS: ExampleApplication_register (2.10s)
+PASS
+ok  	github.com/ulysseses/raft	12.684s
+```
+
+```bash
+$ go test -v -timeout=5m -run=^$ -bench=. -benchmem -args -test.disableLogging
+goos: darwin
+goarch: amd64
+pkg: github.com/ulysseses/raft
+Benchmark_gRPCTransport_RTT-8                    	   70150	     16047 ns/op	     597 B/op	      16 allocs/op
+Benchmark_3Node_ConsistencyStrict_RoundRobin-8   	      10	 159876203 ns/op	    1284 B/op	      21 allocs/op
+Benchmark_3Node_ConsistencyLease_RoundRobin-8    	      12	 166358829 ns/op	    1242 B/op	      21 allocs/op
+Benchmark_1Node_ConsistencyLease_RoundRobin-8    	  180129	      6115 ns/op	     863 B/op	      13 allocs/op
+PASS
+ok  	github.com/ulysseses/raft	32.979s
 ```
 
 ## License

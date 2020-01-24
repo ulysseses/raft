@@ -21,7 +21,7 @@ func Test_heartbeatTicker(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(11 * time.Millisecond):
+	case <-time.After(14 * time.Millisecond):
 		t.FailNow()
 	}
 }
