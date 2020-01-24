@@ -23,10 +23,10 @@ type Transport interface {
 	// memberIDs returns a slice of the IDs of all Raft nodes in the cluster.
 	memberIDs() []uint64
 
-	// start starts the transporter
+	// start starts the transport
 	start()
 
-	// stop stops the transporter
+	// stop stops the transport
 	stop()
 }
 
@@ -117,7 +117,7 @@ func (t *gRPCTransport) stop() {
 func (t *gRPCTransport) Communicate(stream pb.RaftProtocol_CommunicateServer) error {
 	var (
 		recvChan chan<- pb.Message = t.recvChan
-		stopChan <-chan struct{}       = t.stopChan
+		stopChan <-chan struct{}   = t.stopChan
 	)
 	for {
 		msgPtr, err := stream.Recv()
@@ -192,7 +192,7 @@ type peer struct {
 func (p *peer) loop() {
 	var (
 		sendChan <-chan pb.Message = p.sendChan
-		stopChan <-chan struct{}       = p.stopChan
+		stopChan <-chan struct{}   = p.stopChan
 		msg      pb.Message
 	)
 	for {

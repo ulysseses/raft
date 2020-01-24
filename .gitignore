@@ -1,4 +1,7 @@
 .vscode
 experimental/*
 *.prof
+*.svg
 .DS_Store
+raft.test
+examples/kvstore/server/server

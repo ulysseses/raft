@@ -19,7 +19,7 @@ function start3cluster() {
   local addresses='1,tcp://localhost:8001|2,tcp://localhost:8002|3,tcp://localhost:8003'
   local common_flags=(
     -addresses=$addresses
-    -enableLogging=true
+    # -enableLogging=true
     -consistency=lease
   )
 

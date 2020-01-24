@@ -89,7 +89,7 @@ func createUnixSockets(
 // The raft package isn't designed to be performant for this 3-node cluster in-process
 // test environment. As such, please give generous timeout values to prevent test flakiness.
 func spinUpNodes(
-	t *testing.T,
+	tb testing.TB,
 	ids []uint64,
 	pOpts []ProtocolConfigOption,
 	nOpts []NodeConfigOption,
@@ -102,13 +102,13 @@ func spinUpNodes(
 		pConfig := NewProtocolConfig(id, pOpts...)
 		psm, err := pConfig.Build(trs[id])
 		if err != nil {
-			t.Fatal(err)
+			tb.Fatal(err)
 		}
 		nConfig := NewNodeConfig(id, nOpts...)
 		app := newApp(id)
 		node, err := nConfig.Build(psm, trs[id], app)
 		if err != nil {
-			t.Fatal(err)
+			tb.Fatal(err)
 		}
 		nodes[id] = node
 		apps[id] = app
@@ -129,10 +129,10 @@ func spinUpNodes(
 	return nodes, apps
 }
 
-func stopAllNodes(t *testing.T, nodes map[uint64]*Node) {
+func stopAllNodes(tb testing.TB, nodes map[uint64]*Node) {
 	for _, node := range nodes {
 		if err := node.Stop(); err != nil {
-			t.Fatal(err)
+			tb.Fatal(err)
 		}
 	}
 }
@@ -180,6 +180,7 @@ func Benchmark_gRPCTransport_RTT(b *testing.B) {
 	sendC1 := trs[1].send()
 	recvC2 := trs[2].recv()
 	msg := pb.Message{From: 1, To: 2}
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		sendC1 <- msg
@@ -211,7 +212,7 @@ func Test_3Node_ConsistencyStrict_RoundRobin(t *testing.T) {
 	// wait for leader election
 	time.Sleep(3 * time.Second)
 
-	testLinearizableRoundRobin(t, apps, 2, time.Second, 30*time.Second)
+	testRoundRobin(t, apps, 3, true, time.Second, 60*time.Second)
 }
 
 func Test_3Node_ConsistencyLease_RoundRobin(t *testing.T) {
@@ -239,17 +240,74 @@ func Test_3Node_ConsistencyLease_RoundRobin(t *testing.T) {
 	// wait for leader election
 	time.Sleep(3 * time.Second)
 
-	testLinearizableRoundRobin(t, apps, 3, time.Second, 30*time.Second)
+	testRoundRobin(t, apps, 3, false, time.Second, 30*time.Second)
+}
+
+func Benchmark_3Node_ConsistencyLease_RoundRobin(b *testing.B) {
+	// Spin 3 nodes
+	nodes, apps := spinUpNodes(
+		b,
+		[]uint64{1, 2, 3},
+		[]ProtocolConfigOption{
+			WithConsistency(ConsistencyLease),
+			WithLease(500 * time.Millisecond),
+			AddProtocolLogger(),
+		},
+		[]NodeConfigOption{
+			AddNodeLogger(),
+		},
+		func(id uint64) Application { return &register{} })
+	defer stopAllNodes(b, nodes)
+
+	// connect the register to its corresponding node
+	for id := range apps {
+		cl := apps[id].(*register)
+		cl.node = nodes[id]
+	}
+
+	// wait for leader election
+	time.Sleep(3 * time.Second)
+
+	testRoundRobin(b, apps, b.N, false, time.Second, 60*time.Second)
+}
+
+func Benchmark_1Node_ConsistencyLease_RoundRobin(b *testing.B) {
+	// Spin 1 node
+	nodes, apps := spinUpNodes(
+		b,
+		[]uint64{1},
+		[]ProtocolConfigOption{
+			WithConsistency(ConsistencyLease),
+			WithLease(500 * time.Millisecond),
+			AddProtocolLogger(),
+		},
+		[]NodeConfigOption{
+			AddNodeLogger(),
+		},
+		func(id uint64) Application { return &register{} })
+	defer stopAllNodes(b, nodes)
+
+	// connect the register to its corresponding node
+	for id := range apps {
+		cl := apps[id].(*register)
+		cl.node = nodes[id]
+	}
+
+	// wait for leader election
+	time.Sleep(3 * time.Second)
+
+	testRoundRobin(b, apps, b.N, false, time.Second, 60*time.Second)
 }
 
 // Due to there being multiple (e.g. n=3) Raft nodes in a single Go process,
 // there is a lot of inter-goroutine traffic (e.g. between transports, nodes, PSMs, apps, etc.).
 // The raft package isn't designed to be performant for this 3-node cluster in-process
 // test environment. As such, please give generous timeout values to prevent test flakiness.
-func testLinearizableRoundRobin(
-	t *testing.T,
+func testRoundRobin(
+	tb testing.TB,
 	registers map[uint64]Application,
 	rounds int,
+	linearizable bool,
 	reqTimeout time.Duration,
 	testTimeout time.Duration,
 ) {
@@ -259,8 +317,12 @@ func testLinearizableRoundRobin(
 		for id := range registers {
 			ids = append(ids, id)
 		}
+		if b, ok := tb.(*testing.B); ok {
+			b.ResetTimer()
+			b.ReportAllocs()
+		}
 		writerInd := 0
-		readerInd := 1
+		readerInd := 1 % len(ids)
 		for round := 1; round <= rounds; round++ {
 			writer := registers[ids[writerInd]].(*register)
 			reader := registers[ids[readerInd]].(*register)
@@ -274,7 +336,7 @@ func testLinearizableRoundRobin(
 				err := writer.set(ctx, round)
 				cancel()
 				if err != nil {
-					t.Logf("failed attempt #%d of writing value %d", writeAttempt, round)
+					tb.Logf("failed attempt #%d of writing value %d", writeAttempt, round)
 					writeAttempt++
 					continue
 				}
@@ -287,16 +349,19 @@ func testLinearizableRoundRobin(
 				got, err := reader.get(ctx)
 				cancel()
 				if err != nil {
-					t.Logf("failed attempt #%d of reading value %d", readAttempt, round)
+					tb.Logf("failed attempt #%d of reading value %d", readAttempt, round)
 					readAttempt++
 					continue
 				}
-				if got != round {
+				if linearizable && got != round {
 					errC <- fmt.Errorf("read %d, but expected %d: %v", got, round, err)
 					return
 				}
 				break
 			}
+		}
+		if b, ok := tb.(*testing.B); ok {
+			b.StopTimer()
 		}
 		errC <- nil
 	}()
@@ -304,10 +369,10 @@ func testLinearizableRoundRobin(
 	select {
 	case err := <-errC:
 		if err != nil {
-			t.Fatal(err)
+			tb.Fatal(err)
 		}
 	case <-time.After(testTimeout):
-		t.Fatalf("test timed out after %v", testTimeout)
+		tb.Fatalf("test timed out after %v", testTimeout)
 	}
 }
 

@@ -80,7 +80,10 @@ func (t *heartbeatTicker) Reset() {
 	case <-t.cChan:
 	default:
 	}
-	t.resetChan <- struct{}{}
+	select {
+	case t.resetChan <- struct{}{}:
+	default:
+	}
 }
 
 func newHeartbeatTicker(tickPeriod time.Duration, heartbeatTicks uint) Ticker {
@@ -88,7 +91,7 @@ func newHeartbeatTicker(tickPeriod time.Duration, heartbeatTicks uint) Ticker {
 		t:              *time.NewTicker(tickPeriod),
 		cChan:          make(chan struct{}, 1),
 		stopChan:       make(chan struct{}),
-		resetChan:      make(chan struct{}),
+		resetChan:      make(chan struct{}, 1),
 		heartbeatTicks: heartbeatTicks,
 	}
 	return &t
@@ -162,7 +165,10 @@ func (t *electionTicker) Reset() {
 	case <-t.cChan:
 	default:
 	}
-	t.resetChan <- struct{}{}
+	select {
+	case t.resetChan <- struct{}{}:
+	default:
+	}
 }
 
 func newElectionTicker(tickPeriod time.Duration, minElectionTicks, maxElectionTicks uint) Ticker {
@@ -170,7 +176,7 @@ func newElectionTicker(tickPeriod time.Duration, minElectionTicks, maxElectionTi
 		t:                *time.NewTicker(tickPeriod),
 		cChan:            make(chan struct{}, 1),
 		stopChan:         make(chan struct{}),
-		resetChan:        make(chan struct{}),
+		resetChan:        make(chan struct{}, 1),
 		minElectionTicks: minElectionTicks,
 		maxElectionTicks: maxElectionTicks,
 	}
