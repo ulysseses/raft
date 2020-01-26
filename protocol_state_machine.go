@@ -375,6 +375,9 @@ func (psm *ProtocolStateMachine) proposeAsLeader(req proposalRequest) {
 		psm.updateCommit(psm.state.LastIndex)
 		return
 	}
+
+	psm.heartbeat()
+	psm.heartbeatTicker.Reset()
 }
 
 func (psm *ProtocolStateMachine) proposeToLeader(req proposalRequest) {
