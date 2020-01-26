@@ -6,38 +6,55 @@ import (
 	"github.com/ulysseses/raft/pb"
 )
 
-// fakeTransport is an in-memory transport consisting of channels.
+var (
+	fakeTransportRegistry = map[uint64]chan pb.Message{}
+)
+
+// channelTransport is an in-memory transport consisting of channels.
 // No messages are dropped.
-type fakeTransport struct {
+type channelTransport struct {
 	recvChan chan pb.Message
 	sendChan chan pb.Message
 	id       uint64
+	mIDs     []uint64
 	stopChan chan struct{}
 
 	outboxes map[uint64]chan<- pb.Message
 }
 
 // recv implements Transport for fakeTransport
-func (t *fakeTransport) recv() <-chan pb.Message {
+func (t *channelTransport) recv() <-chan pb.Message {
 	return t.recvChan
 }
 
 // send implements Transport for fakeTransport
-func (t *fakeTransport) send() chan<- pb.Message {
+func (t *channelTransport) send() chan<- pb.Message {
 	return t.sendChan
 }
 
 // memberIDs implements Transport for fakeTransport
-func (t *fakeTransport) memberIDs() []uint64 {
-	mIDs := []uint64{t.id}
-	for pID := range t.outboxes {
-		mIDs = append(mIDs, pID)
-	}
-	return mIDs
+func (t *channelTransport) memberIDs() []uint64 {
+	return t.mIDs
 }
 
 // start implements Transport for fakeTransport
-func (t *fakeTransport) start() {
+func (t *channelTransport) start() {
+	// connect to all peers via the registry
+	if len(fakeTransportRegistry) != len(t.mIDs) {
+		panic(fmt.Sprintf("not all members registered on fakeTransportRegistry"))
+	}
+	for id, ch := range fakeTransportRegistry {
+		if t.id == id {
+			continue
+		}
+
+		if ch == nil {
+			panic(fmt.Sprintf("channelTransport ID %d doesn't exist", id))
+		}
+
+		t.outboxes[id] = ch
+	}
+
 	go func() {
 		for {
 			select {
@@ -59,36 +76,29 @@ func (t *fakeTransport) start() {
 }
 
 // stop implements Transport for fakeTransport
-func (t *fakeTransport) stop() {
+func (t *channelTransport) stop() {
 	t.stopChan <- struct{}{}
 }
 
-// bind is symmetric and idempotent
-func (t *fakeTransport) bind(peer *fakeTransport) {
-	t.outboxes[peer.id] = peer.recvChan
-	peer.outboxes[t.id] = t.recvChan
+func newChannelTransport(cfg *TransportConfig) Transport {
+	tr := channelTransport{
+		recvChan: make(chan pb.Message, cfg.MsgBufferSize),
+		sendChan: make(chan pb.Message, cfg.MsgBufferSize),
+		id:       cfg.ID,
+		mIDs:     cfg.Medium.(*ChannelMedium).MemberIDs,
+		stopChan: make(chan struct{}),
+		outboxes: map[uint64]chan<- pb.Message{},
+	}
+
+	// register
+	fakeTransportRegistry[cfg.ID] = tr.recvChan
+
+	return &tr
 }
 
-func newFakeTransports(ids ...uint64) map[uint64]Transport {
-	trs := map[uint64]Transport{}
-	for _, id := range ids {
-		trs[id] = &fakeTransport{
-			recvChan: make(chan pb.Message, (len(ids)-1)*30+1),
-			sendChan: make(chan pb.Message, (len(ids)-1)*30+1),
-			id:       id,
-			stopChan: make(chan struct{}),
-
-			outboxes: map[uint64]chan<- pb.Message{},
-		}
+// function to be called to flush out the fakeTranportRegistry
+func resetFakeTransportRegistry() {
+	for id := range fakeTransportRegistry {
+		delete(fakeTransportRegistry, id)
 	}
-
-	for i := 0; i < len(ids); i++ {
-		for j := i + 1; j < len(ids); j++ {
-			tri := trs[ids[i]].(*fakeTransport)
-			trj := trs[ids[j]].(*fakeTransport)
-			tri.bind(trj)
-		}
-	}
-
-	return trs
 }

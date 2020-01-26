@@ -156,7 +156,7 @@ func main() {
 		raft.WithConsistency(consistency),
 		raft.WithLease(lease),
 	}
-	tConfigOpts := []raft.TransportConfigOption{}
+	tConfigOpts := []raft.TransportConfigOption{raft.WithAddresses(addresses)}
 	nConfigOpts := []raft.NodeConfigOption{}
 	pConfigOpts = append(pConfigOpts, raft.WithProtocolDebug(debug))
 	tConfigOpts = append(tConfigOpts, raft.WithTransportDebug(debug))
@@ -167,7 +167,7 @@ func main() {
 		nConfigOpts = append(nConfigOpts, raft.AddNodeLogger())
 	}
 	pConfig := raft.NewProtocolConfig(id, pConfigOpts...)
-	tConfig := raft.NewTransportConfig(id, addresses, tConfigOpts...)
+	tConfig := raft.NewTransportConfig(id, tConfigOpts...)
 	nConfig := raft.NewNodeConfig(id, nConfigOpts...)
 
 	tr, err := tConfig.Build()

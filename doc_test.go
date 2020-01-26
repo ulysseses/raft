@@ -67,7 +67,7 @@ func ExampleApplication_register() {
 
 	// Start up the Raft node.
 	r := &register{}
-	tr, err := raft.NewTransportConfig(id, addresses).Build()
+	tr, err := raft.NewTransportConfig(id, raft.WithAddresses(addresses)).Build()
 	if err != nil {
 		log.Fatal(err)
 	}

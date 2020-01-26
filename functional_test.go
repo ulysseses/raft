@@ -86,8 +86,7 @@ func createUnixSockets(
 
 // Due to there being 3 Raft nodes in a single Go process,
 // there is a lot of inter-goroutine traffic (e.g. between transports, nodes, PSMs, apps, etc.).
-// The raft package isn't designed to be performant for this 3-node cluster in-process
-// test environment. As such, please give generous timeout values to prevent test flakiness.
+// As such, please give generous timeout values to prevent test flakiness.
 func spinUpNodes(
 	tb testing.TB,
 	ids []uint64,
@@ -102,19 +101,25 @@ func spinUpNodes(
 
 	nodes := map[uint64]*Node{}
 	apps := map[uint64]Application{}
-	trs := newFakeTransports(ids...)
 	for _, id := range ids {
-		pConfig := NewProtocolConfig(id, pOpts...)
-		psm, err := pConfig.Build(trs[id])
+		tr, err := NewTransportConfig(id, WithChannelMedium(ids...)).Build()
 		if err != nil {
 			tb.Fatal(err)
 		}
+
+		pConfig := NewProtocolConfig(id, pOpts...)
+		psm, err := pConfig.Build(tr)
+		if err != nil {
+			tb.Fatal(err)
+		}
+
 		nConfig := NewNodeConfig(id, nOpts...)
 		app := newApp(id)
-		node, err := nConfig.Build(psm, trs[id], app)
+		node, err := nConfig.Build(psm, tr, app)
 		if err != nil {
 			tb.Fatal(err)
 		}
+
 		nodes[id] = node
 		apps[id] = app
 	}
@@ -161,7 +166,7 @@ func Benchmark_gRPCTransport_RTT(b *testing.B) {
 
 	trs := map[uint64]Transport{}
 	for _, id := range []uint64{1, 2} {
-		tConfig := NewTransportConfig(id, addresses)
+		tConfig := NewTransportConfig(id, WithAddresses(addresses))
 		tr, err := tConfig.Build()
 		if err != nil {
 			b.Fatal(err)

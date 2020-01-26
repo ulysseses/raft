@@ -354,12 +354,38 @@ type TransportConfig struct {
 	// ID of the Raft node to configure.
 	ID uint64
 
-	// Addresses mapping Raft node ID to address to connect to.
-	Addresses map[uint64]string
-
 	// MsgBufferSize is the max number of Raft protocol messages per peer node allowed to be buffered
 	// before the Raft node can process/send them out.
 	MsgBufferSize int
+
+	// Logger, if provided, will be used to log events.
+	Logger *zap.Logger
+
+	// Debug, if true, will log events at the DEBUG verbosity/granularity.
+	Debug bool
+
+	// Medium represents which the type of communication medium that pb.Messages should be sent.
+	// The default medium is GRPCMedium.
+	Medium Medium
+}
+
+// Medium represents which the type of communication medium that pb.Messages should be sent.
+// ChannelMedium sends messages over Go channels.
+// GRPCMedium sends messages over the gRPC RaftProtocol service (via client stream).
+type Medium interface{ isMedium() }
+
+// ChannelMedium sends messages over Go channels.
+type ChannelMedium struct {
+	// MemberIDs is a slice of the IDs of all the Raft cluster members, including self.
+	MemberIDs []uint64
+}
+
+func (*ChannelMedium) isMedium() {}
+
+// GRPCMedium sends messages over the gRPC RaftProtocol service (via client stream).
+type GRPCMedium struct {
+	// Addresses mapping Raft node ID to address to connect to.
+	Addresses map[uint64]string
 
 	// DialTimeout is the timeout for dialing to peers.
 	// ReconnectDelay is the duration to wait before retrying to dial a connection.
@@ -374,30 +400,42 @@ type TransportConfig struct {
 
 	// CallOptions is an optional list of grpc.CallOptions to configure calling the Communicate RPC.
 	CallOptions []grpc.CallOption
-
-	// Logger, if provided, will be used to log events.
-	Logger *zap.Logger
-
-	// Debug, if true, will log events at the DEBUG verbosity/granularity.
-	Debug bool
 }
+
+func (*GRPCMedium) isMedium() {}
 
 // Verify verifies that the configuration is correct.
 func (c *TransportConfig) Verify() error {
 	if c.ID == 0 {
 		return fmt.Errorf("ID must specified and not zero")
 	}
-	if _, ok := c.Addresses[c.ID]; !ok {
-		return fmt.Errorf("no address found for Raft node ID = %d", c.ID)
-	}
-	if c.MsgBufferSize <= 0 {
-		return fmt.Errorf("MsgBufferSize must be greater than 0")
-	}
-	if c.DialTimeout <= 0 {
-		return fmt.Errorf("DialTimeout must be greater than 0")
-	}
-	if c.ReconnectDelay <= 0 {
-		return fmt.Errorf("ReconnectDelay must be greater than 0")
+	switch c2 := c.Medium.(type) {
+	case *GRPCMedium:
+		if _, ok := c2.Addresses[c.ID]; !ok {
+			return fmt.Errorf("no address found for Raft node ID = %d", c.ID)
+		}
+		if c.MsgBufferSize <= 0 {
+			return fmt.Errorf("MsgBufferSize must be greater than 0")
+		}
+		if c2.DialTimeout <= 0 {
+			return fmt.Errorf("DialTimeout must be greater than 0")
+		}
+		if c2.ReconnectDelay <= 0 {
+			return fmt.Errorf("ReconnectDelay must be greater than 0")
+		}
+	case *ChannelMedium:
+		found := false
+		for _, mID := range c2.MemberIDs {
+			if mID == c.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("ID %d was not found in MemberIDs", c.ID)
+		}
+	default:
+		return fmt.Errorf("unrecognized Medium: %v", c.Medium)
 	}
 	return nil
 }
@@ -408,15 +446,24 @@ func (c *TransportConfig) Build() (Transport, error) {
 		return nil, err
 	}
 
-	if _, ok := c.Addresses[c.ID]; !ok {
-		return nil, fmt.Errorf("%d is not a key into cfg.addresses", c.ID)
+	switch c.Medium.(type) {
+	case *GRPCMedium:
+		return c.buildGRPCTransport()
+	case *ChannelMedium:
+		return c.buildChannelTransport()
+	default:
+		return nil, fmt.Errorf("unrecognized Medium: %v", c.Medium)
 	}
-	lis, err := listen(c.Addresses[c.ID])
+}
+
+func (c *TransportConfig) buildGRPCTransport() (Transport, error) {
+	c2 := c.Medium.(*GRPCMedium)
+	lis, err := listen(c2.Addresses[c.ID])
 	if err != nil {
 		return nil, err
 	}
 	peers := map[uint64]*peer{}
-	for id, addr := range c.Addresses {
+	for id, addr := range c2.Addresses {
 		if id == c.ID {
 			continue
 		}
@@ -430,21 +477,21 @@ func (c *TransportConfig) Build() (Transport, error) {
 			stream:         nil, // will be initialized when started
 			id:             id,
 			addr:           addr,
-			reconnectDelay: c.ReconnectDelay,
-			dialTimeout:    c.DialTimeout,
-			dialOptions:    c.DialOptions,
-			callOptions:    c.CallOptions,
+			reconnectDelay: c2.ReconnectDelay,
+			dialTimeout:    c2.DialTimeout,
+			dialOptions:    c2.DialOptions,
+			callOptions:    c2.CallOptions,
 			logger:         pLogger,
 			debug:          c.Debug,
 		}
 	}
 	t := gRPCTransport{
 		lis:        lis,
-		grpcServer: grpc.NewServer(c.ServerOptions...),
+		grpcServer: grpc.NewServer(c2.ServerOptions...),
 		id:         c.ID,
 		peers:      peers,
 
-		recvChan: make(chan pb.Message, (len(c.Addresses)-1)*c.MsgBufferSize+1),
+		recvChan: make(chan pb.Message, (len(c2.Addresses)-1)*c.MsgBufferSize+1),
 		sendChan: make(chan pb.Message),
 		stopChan: make(chan struct{}, 2),
 
@@ -455,15 +502,21 @@ func (c *TransportConfig) Build() (Transport, error) {
 	return &t, err
 }
 
+func (c *TransportConfig) buildChannelTransport() (Transport, error) {
+	return newChannelTransport(c), nil
+}
+
 // NewTransportConfig builds a TransportConfig for a Raft node.
 func NewTransportConfig(
 	id uint64,
-	addresses map[uint64]string,
 	opts ...TransportConfigOption,
 ) *TransportConfig {
+	// safely copy to not modify the default values.
 	c := TransportConfigTemplate
+	medium := *TransportConfigTemplate.Medium.(*GRPCMedium)
+	c.Medium = &medium
+
 	c.ID = id
-	c.Addresses = addresses
 
 	insecure := true
 	var aOpt *addTransportLogger
@@ -477,8 +530,9 @@ func NewTransportConfig(
 		opt.Transform(&c)
 	}
 
-	if insecure {
-		c.DialOptions = append(c.DialOptions, grpc.WithInsecure())
+	if _, ok := c.Medium.(*GRPCMedium); ok && insecure {
+		c.Medium.(*GRPCMedium).DialOptions = append(
+			c.Medium.(*GRPCMedium).DialOptions, grpc.WithInsecure())
 	}
 	if c.Debug && aOpt != nil {
 		aOpt.loggerCfg.Level.SetLevel(zapcore.DebugLevel)
@@ -492,32 +546,53 @@ func NewTransportConfig(
 var TransportConfigTemplate = TransportConfig{
 	// 30 message buffer per peer client
 	MsgBufferSize: 30,
+	// Default medium is GRPC.
+	Medium: &GRPCMedium{
+		// Sensible dial timeout if the Raft election timeout is ~1-2 seconds.
+		DialTimeout:    3 * time.Second,
+		ReconnectDelay: 3 * time.Second,
 
-	// Sensible dial timeout if the Raft election timeout is ~1-2 seconds.
-	DialTimeout:    3 * time.Second,
-	ReconnectDelay: 3 * time.Second,
-
-	ServerOptions: []grpc.ServerOption{
-		// Sensible keep-alive: disconnect a peer connection after ~10 seconds of inactivity.
-		grpc.KeepaliveParams(keepalive.ServerParameters{
-			Time:    5 * time.Second,
-			Timeout: 5 * time.Second,
-		}),
-	},
-
-	DialOptions: []grpc.DialOption{
-		// Insecure by default. Use raft.WithSecurity to override.
-		grpc.WithInsecure(),
-		// Sensible keep-alive: disconnect from a peer's server after ~15 seconds of inactivity.
-		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:    10 * time.Second, // minimum allowable value
-			Timeout: 5 * time.Second,
-		}),
+		ServerOptions: []grpc.ServerOption{
+			// Sensible keep-alive: disconnect a peer connection after ~10 seconds of inactivity.
+			grpc.KeepaliveParams(keepalive.ServerParameters{
+				Time:    5 * time.Second,
+				Timeout: 5 * time.Second,
+			}),
+		},
 	},
 }
 
 // TransportConfigOption provides options to configure TransportConfig further.
 type TransportConfigOption interface{ Transform(*TransportConfig) }
+
+/******** WithChannelMedium **************************************************/
+type withChannelMedium struct {
+	medium ChannelMedium
+}
+
+func (w *withChannelMedium) Transform(c *TransportConfig) {
+	c.Medium = &w.medium
+}
+
+// WithChannelMedium configures to use Go channels to transport messages instead of default gRPC.
+// This option should only be used in testing!
+func WithChannelMedium(memberIDs ...uint64) TransportConfigOption {
+	return &withChannelMedium{medium: ChannelMedium{MemberIDs: memberIDs}}
+}
+
+/******** WithAddresses ******************************************************/
+type withAddresses struct {
+	addresses map[uint64]string
+}
+
+func (w *withAddresses) Transform(c *TransportConfig) {
+	c.Medium.(*GRPCMedium).Addresses = w.addresses
+}
+
+// WithAddresses sets the addresses of all Raft cluster nodes.
+func WithAddresses(addresses map[uint64]string) TransportConfigOption {
+	return &withAddresses{addresses: addresses}
+}
 
 /******** WithSecurity *******************************************************/
 type withSecurity struct {
@@ -525,7 +600,7 @@ type withSecurity struct {
 }
 
 func (w *withSecurity) Transform(c *TransportConfig) {
-	c.DialOptions = append(c.DialOptions, w.opt)
+	c.Medium.(*GRPCMedium).DialOptions = append(c.Medium.(*GRPCMedium).DialOptions, w.opt)
 }
 
 // WithSecurity configures gRPC to use security instead of the default grpc.WithInsecure option.
@@ -539,7 +614,7 @@ type withGRPCServerOption struct {
 }
 
 func (w *withGRPCServerOption) Transform(c *TransportConfig) {
-	c.ServerOptions = append(c.ServerOptions, w.opt)
+	c.Medium.(*GRPCMedium).ServerOptions = append(c.Medium.(*GRPCMedium).ServerOptions, w.opt)
 }
 
 // WithGRPCServerOption adds a grpc.ServerOption to grpc.NewServer
@@ -553,7 +628,7 @@ type withGRPCDialOption struct {
 }
 
 func (w *withGRPCDialOption) Transform(c *TransportConfig) {
-	c.DialOptions = append(c.DialOptions, w.opt)
+	c.Medium.(*GRPCMedium).DialOptions = append(c.Medium.(*GRPCMedium).DialOptions, w.opt)
 }
 
 // WithGRPCDialOption adds a grpc.DialOption to grpc.NewServer
@@ -567,7 +642,7 @@ type withGRPCCallOption struct {
 }
 
 func (w *withGRPCCallOption) Transform(c *TransportConfig) {
-	c.CallOptions = append(c.CallOptions, w.opt)
+	c.Medium.(*GRPCMedium).CallOptions = append(c.Medium.(*GRPCMedium).CallOptions, w.opt)
 }
 
 // WithGRPCCallOption adds a grpc.CallOption to grpc.NewServer
