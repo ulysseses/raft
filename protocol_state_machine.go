@@ -131,28 +131,28 @@ func (psm *ProtocolStateMachine) processMessage(msg pb.Message) {
 
 	switch msg.Type {
 	case pb.MsgApp:
-		msgApp := getApp(msg)
+		msgApp := getApp(&msg)
 		psm.processApp(msgApp)
 	case pb.MsgAppResp:
-		msgAppResp := getAppResp(msg)
+		msgAppResp := getAppResp(&msg)
 		psm.processAppResp(msgAppResp)
 	case pb.MsgRead:
-		msgRead := getRead(msg)
+		msgRead := getRead(&msg)
 		psm.processRead(msgRead)
 	case pb.MsgReadResp:
-		msgReadResp := getReadResp(msg)
+		msgReadResp := getReadResp(&msg)
 		psm.processReadResp(msgReadResp)
 	case pb.MsgProp:
-		msgProp := getProp(msg)
+		msgProp := getProp(&msg)
 		psm.processProp(msgProp)
 	case pb.MsgPropResp:
-		msgPropResp := getPropResp(msg)
+		msgPropResp := getPropResp(&msg)
 		psm.processPropResp(msgPropResp)
 	case pb.MsgVote:
-		msgVote := getVote(msg)
+		msgVote := getVote(&msg)
 		psm.processVote(msgVote)
 	case pb.MsgVoteResp:
-		msgVoteResp := getVoteResp(msg)
+		msgVoteResp := getVoteResp(&msg)
 		psm.processVoteResp(msgVoteResp)
 	default:
 		panic(fmt.Errorf("unrecognized msg type: %s", msg.Type.String()))
@@ -373,6 +373,7 @@ func (psm *ProtocolStateMachine) proposeAsLeader(req proposalRequest) {
 	// shortcut: 1-node cluster
 	if psm.state.QuorumSize == 1 {
 		psm.updateCommit(psm.state.LastIndex)
+		return
 	}
 }
 

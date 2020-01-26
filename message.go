@@ -24,6 +24,28 @@ func buildApp(
 	}
 }
 
+type msgApp struct {
+	term, from, to         uint64
+	index, logTerm, commit uint64
+	entries                []pb.Entry
+	tid                    int64
+	proxy                  uint64
+}
+
+func getApp(msg *pb.Message) msgApp {
+	return msgApp{
+		term:    msg.Term,
+		from:    msg.From,
+		to:      msg.To,
+		commit:  msg.Commit,
+		index:   msg.Index,
+		logTerm: msg.LogTerm,
+		entries: msg.Entries,
+		tid:     msg.Tid,
+		proxy:   msg.Proxy,
+	}
+}
+
 func buildAppRead(
 	term, from, to uint64,
 	commit uint64, tid int64, proxy uint64,
@@ -36,28 +58,6 @@ func buildAppRead(
 		Commit: commit,
 		Tid:    tid,
 		Proxy:  proxy,
-	}
-}
-
-type msgApp struct {
-	term, from, to         uint64
-	index, logTerm, commit uint64
-	entries                []pb.Entry
-	tid                    int64
-	proxy                  uint64
-}
-
-func getApp(msg pb.Message) msgApp {
-	return msgApp{
-		term:    msg.Term,
-		from:    msg.From,
-		to:      msg.To,
-		commit:  msg.Commit,
-		index:   msg.Index,
-		logTerm: msg.LogTerm,
-		entries: msg.Entries,
-		tid:     msg.Tid,
-		proxy:   msg.Proxy,
 	}
 }
 
@@ -101,7 +101,7 @@ type msgAppResp struct {
 	success bool
 }
 
-func getAppResp(msg pb.Message) msgAppResp {
+func getAppResp(msg *pb.Message) msgAppResp {
 	return msgAppResp{
 		term:    msg.Term,
 		from:    msg.From,
@@ -131,7 +131,7 @@ type msgRead struct {
 	tid  int64
 }
 
-func getRead(msg pb.Message) msgRead {
+func getRead(msg *pb.Message) msgRead {
 	return msgRead{
 		term: msg.Term,
 		from: msg.From,
@@ -160,7 +160,7 @@ type msgReadResp struct {
 	index uint64
 }
 
-func getReadResp(msg pb.Message) msgReadResp {
+func getReadResp(msg *pb.Message) msgReadResp {
 	return msgReadResp{
 		term:  msg.Term,
 		from:  msg.From,
@@ -190,7 +190,7 @@ type msgProp struct {
 	data []byte
 }
 
-func getProp(msg pb.Message) msgProp {
+func getProp(msg *pb.Message) msgProp {
 	return msgProp{
 		term: msg.Term,
 		from: msg.From,
@@ -222,7 +222,7 @@ type msgPropResp struct {
 	logTerm uint64
 }
 
-func getPropResp(msg pb.Message) msgPropResp {
+func getPropResp(msg *pb.Message) msgPropResp {
 	return msgPropResp{
 		term:    msg.Term,
 		from:    msg.From,
@@ -253,7 +253,7 @@ type msgVote struct {
 	logTerm uint64
 }
 
-func getVote(msg pb.Message) msgVote {
+func getVote(msg *pb.Message) msgVote {
 	return msgVote{
 		term:    msg.Term,
 		from:    msg.From,
@@ -279,7 +279,7 @@ type msgVoteResp struct {
 	to   uint64
 }
 
-func getVoteResp(msg pb.Message) msgVoteResp {
+func getVoteResp(msg *pb.Message) msgVoteResp {
 	return msgVoteResp{
 		term: msg.Term,
 		from: msg.From,
