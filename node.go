@@ -171,10 +171,3 @@ func (n *Node) Stop() error {
 func (n *Node) l() bool {
 	return n.logger != nil
 }
-
-// Application applies the committed raft entries. Applications interfacing with
-// the Raft node must implement this interface.
-type Application interface {
-  // Apply applies the newly committed entries to the application.
-	Apply(entries []pb.Entry) error
-}

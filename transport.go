@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ulysseses/raft/pb"
@@ -285,4 +286,120 @@ func listen(target string) (net.Listener, error) {
 		return net.Listen(tokens[0], tokens[1])
 	}
 	return nil, fmt.Errorf("target must be in {net}://{addr} format. Got: %s", target)
+}
+
+/********** Fake Transport ***************************************************/
+// TODO(ulysseses): there could be a better way than busy waiting with mutex...
+var (
+	fakeTransportRegistry = &_registry{
+		id2Chan: map[uint64]chan pb.Message{},
+	}
+)
+
+type _registry struct {
+	sync.Mutex
+	id2Chan map[uint64]chan pb.Message
+}
+
+// channelTransport is an in-memory transport consisting of channels.
+// No messages are dropped.
+type channelTransport struct {
+	recvChan chan pb.Message
+	sendChan chan pb.Message
+	id       uint64
+	mIDs     []uint64
+	stopChan chan struct{}
+
+	outboxes map[uint64]chan<- pb.Message
+}
+
+// recv implements Transport for fakeTransport
+func (t *channelTransport) recv() <-chan pb.Message {
+	return t.recvChan
+}
+
+// send implements Transport for fakeTransport
+func (t *channelTransport) send() chan<- pb.Message {
+	return t.sendChan
+}
+
+// memberIDs implements Transport for fakeTransport
+func (t *channelTransport) memberIDs() []uint64 {
+	return t.mIDs
+}
+
+// start implements Transport for fakeTransport
+func (t *channelTransport) start() {
+	// connect to all peers via the registry
+	done := false
+	for !done {
+		fakeTransportRegistry.Lock()
+		done = len(fakeTransportRegistry.id2Chan) == len(t.mIDs)
+		fakeTransportRegistry.Unlock()
+	}
+
+	fakeTransportRegistry.Lock()
+	for id, ch := range fakeTransportRegistry.id2Chan {
+		if t.id == id {
+			continue
+		}
+
+		if ch == nil {
+			panic(fmt.Sprintf("channelTransport ID %d doesn't exist", id))
+		}
+
+		t.outboxes[id] = ch
+	}
+	fakeTransportRegistry.Unlock()
+
+	go func() {
+		for {
+			select {
+			case <-t.stopChan:
+				return
+			case msg := <-t.sendChan:
+				if outbox, ok := t.outboxes[msg.To]; ok {
+					select {
+					case <-t.stopChan:
+						return
+					case outbox <- msg:
+					}
+				} else {
+					panic(fmt.Sprintf("unrecognized recipient: %d", msg.To))
+				}
+			}
+		}
+	}()
+}
+
+// stop implements Transport for fakeTransport
+func (t *channelTransport) stop() {
+	t.stopChan <- struct{}{}
+}
+
+func newChannelTransport(cfg *TransportConfig) Transport {
+	tr := channelTransport{
+		recvChan: make(chan pb.Message, cfg.MsgBufferSize),
+		sendChan: make(chan pb.Message, cfg.MsgBufferSize),
+		id:       cfg.ID,
+		mIDs:     cfg.Medium.(*ChannelMedium).MemberIDs,
+		stopChan: make(chan struct{}),
+		outboxes: map[uint64]chan<- pb.Message{},
+	}
+
+	// register
+	fakeTransportRegistry.Lock()
+	fakeTransportRegistry.id2Chan[cfg.ID] = tr.recvChan
+	fakeTransportRegistry.Unlock()
+
+	return &tr
+}
+
+// function to be called to flush out the fakeTranportRegistry
+func resetFakeTransportRegistry() {
+	fakeTransportRegistry.Lock()
+	defer fakeTransportRegistry.Unlock()
+	for id := range fakeTransportRegistry.id2Chan {
+		delete(fakeTransportRegistry.id2Chan, id)
+	}
 }

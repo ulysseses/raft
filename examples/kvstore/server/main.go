@@ -26,8 +26,8 @@ var (
 	lease          = 500 * time.Millisecond
 	enableLogging  = false
 	debug          = false
-	readTimeout    = 5 * time.Second
-	proposeTimeout = 5 * time.Second
+	readTimeout    = 3 * time.Second
+	proposeTimeout = 3 * time.Second
 )
 
 func init() {
