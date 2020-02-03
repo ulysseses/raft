@@ -21,7 +21,7 @@ func Test_heartbeatTicker(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(14 * time.Millisecond):
+	case <-time.After(time.Second):
 		t.FailNow()
 	}
 }
@@ -40,7 +40,7 @@ func Test_electionTicker(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(31 * time.Millisecond):
+	case <-time.After(time.Second):
 		t.FailNow()
 	}
 }
