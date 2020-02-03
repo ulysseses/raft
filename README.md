@@ -3,8 +3,8 @@
     <img src="./rafty.png" width="100"></img>
     <h1 align="center">Raft</h1>
     <p align="center">Proof of concept implementation of the <a href="https://raft.github.io">Raft consensus algorithm</a>.</p>
-    <p align="center">GoDoc: https://godoc.org/github.com/ulysseses/raft</p>
     <p align="center">
+        <a href="https://godoc.org/github.com/ulysseses/wal"><img src="https://godoc.org/github.com/ulysseses/wal?status.svg"></a>
         <a href="https://github.com/ulysseses/raft/actions"><img src="https://github.com/ulysseses/raft/workflows/Build/badge.svg"></a>
         <a href="https://github.com/ulysseses/raft/actions"><img src="https://github.com/ulysseses/raft/workflows/Tests/badge.svg"></a>
         <img src="https://img.shields.io/badge/status-WIP-yellow">
